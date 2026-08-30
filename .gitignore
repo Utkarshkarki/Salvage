@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+
+# Environment & secrets
+.env
+.env.*
+!.env.example
+
+# Database / runtime artifacts
+*.db
+*.db-journal
+*.sqlite3
+celerybeat-schedule*
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Local editor / agent config (user-specific, not project source)
+.claude/
+
+# OS
+Thumbs.db
+.DS_Store
