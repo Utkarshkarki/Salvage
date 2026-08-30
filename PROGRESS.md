@@ -32,6 +32,8 @@
 - **`fallback_triggered` in the audit log now means ONE thing: the LLM call itself failed** (diagnose or decide). Stopping-rule overrides are recorded separately in the decide outcome string (`OVERRIDE` + `rule=<R#>`), NOT folded into the fallback flag. This is what lets the metrics separate "LLM was down" from "LLM proposed something unsafe and code rejected it" — two very different stories to a stakeholder.
 - **`stats.stub_mode_actions` counts only cases that actually executed a side-effecting action** through the stub; `Action.STOP` cases resolve with no side effect and are excluded (60 total − 5 stopped = 55 stub executions in the demo).
 
+12. **GitHub upload (this session)** — connected local project to `https://github.com/Utkarshkarki/Salvage.git` and pushed to `main`. Initialized local repo, renamed branch `master→main`, committed the full project, then joined the remote's initial commit via `git merge origin/main --allow-unrelated-histories` (kept the project's tailored `.gitignore` and replaced the placeholder README with a real one). Verified `.env` (real Upstash/Razorpay/webhook secrets) is **not** tracked — only `.env.example` is committed. History: `684b6b2` (project) ⇄ merge `c1357a5` ← `9ddeeea` (remote initial). Committed README includes the regenerated demo batch metrics (₹39,776 recovered / 20.7%).
+
 ## In progress
 
 - None — pipeline is green and complete.
