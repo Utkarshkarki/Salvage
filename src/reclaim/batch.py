@@ -21,8 +21,9 @@ import os
 import sys
 import uuid
 from pathlib import Path
+from typing import Any
 
-from .config import get_settings
+from .config import Settings, get_settings
 from .db import Base, Database, init_schema
 from .webhook import (
     RazorpayWebhookException,
@@ -55,15 +56,17 @@ def _build_db() -> tuple[Database, bool]:
     return db, fresh
 
 
-def main() -> int:
-    settings = get_settings()
-    db, _fresh = _build_db()
+def ingest_batch(
+    db: Database, batch: Any, settings: Settings
+) -> tuple[list[str], int, int]:
+    """Ingest a SyntheticBatch through the REAL webhook boundary.
 
-    from .synthetic import generate_batch
+    Returns ``(new_case_ids, duplicate_count, rejected_count)``.
 
-    logger.info("generating synthetic batch (seed=42)...")
-    batch = generate_batch(seed=42, webhook_secret=settings.razorpay_webhook_secret)
-
+    Shared by the ``python -m reclaim.batch`` CLI and the ``/simulator`` page so
+    simulated runs exercise the exact same signature/parse/dedupe boundary logic
+    as the real batch — no duplicated pipeline.
+    """
     new_ids: list[str] = []
     rejected = 0
     duplicates = 0
@@ -85,6 +88,19 @@ def main() -> int:
             new_ids.append(_case.case_id)
         else:
             duplicates += 1
+    return new_ids, duplicates, rejected
+
+
+def main() -> int:
+    settings = get_settings()
+    db, _fresh = _build_db()
+
+    from .synthetic import generate_batch
+
+    logger.info("generating synthetic batch (seed=42)...")
+    batch = generate_batch(seed=42, webhook_secret=settings.razorpay_webhook_secret)
+
+    new_ids, duplicates, rejected = ingest_batch(db, batch, settings)
 
     logger.info("ingested: %d new, %d duplicates, %d rejected", len(new_ids), duplicates, rejected)
 

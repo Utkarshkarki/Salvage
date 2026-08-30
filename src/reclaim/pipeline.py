@@ -183,12 +183,21 @@ def run_case(
     rule: RuleOutcome = enforce(
         de_input, de.output, settings, payment_method_update_count=email_count
     )
+    # Include scheduled_at on the decide audit entry when present, so the
+    # customer-facing status page (/status/{case_id}) can render "we'll retry
+    # on <date>" from the SAME persisted data the merchant dashboard reads.
+    decide_input_state = de_input.model_dump(mode="json")
+    if rule.decision.scheduled_at is not None:
+        decide_input_state = {
+            **decide_input_state,
+            "scheduled_at": rule.decision.scheduled_at.isoformat(),
+        }
     write_audit(
         db,
         AuditLogEntry(
             case_id=case_id, stage="decide",
             agent_reasoning=rule.decision.reasoning,
-            input_state=de_input.model_dump(mode="json"),
+            input_state=decide_input_state,
             decision=rule.decision.action.value,
             action_taken=None,
             outcome=f"DECIDED rule={rule.rule or 'none'}"

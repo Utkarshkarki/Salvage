@@ -30,6 +30,11 @@ TRANSITION_TABLE: dict[CaseState | None, set[CaseState]] = {
     CaseState.DIAGNOSED: {CaseState.DECIDED},
     CaseState.DECIDED: {CaseState.ACTING, CaseState.RESOLVED},
     CaseState.ACTING: {CaseState.RESOLVED, CaseState.ESCALATED, CaseState.FAILED},
+    # ESCALATED is reported terminal for metrics (awaiting a human), but a
+    # deliberate, audited manual override may re-open it. These edges are only
+    # reachable through the `manual=True` helpers below (approve_retry /
+    # resolve_human) — never by the agentic pipeline.
+    CaseState.ESCALATED: {CaseState.ACTING, CaseState.RESOLVED},
 }
 
 class IllegalTransitionError(Exception):
@@ -112,6 +117,27 @@ class CaseStateMachine:
     def fail(self) -> CaseState:
         return self._move(CaseState.FAILED, trigger="act.failed")
 
+    # -- manual (human) overrides --------------------------------------------
+    # These are the ONLY ways to leave the terminal ESCALATED state. They are
+    # deliberate, audited operator actions and are never called by the agentic
+    # pipeline; each carries its own manual_override audit entry (see manual.py).
+
+    def approve_retry(self) -> CaseState:
+        """ESCALATED -> ACTING: an operator authorises a manual retry."""
+        if self.current != CaseState.ESCALATED:
+            raise IllegalTransitionError(
+                f"approve_retry requires ESCALATED, got {self.current}"
+            )
+        return self._move(CaseState.ACTING, trigger="manual.approve_retry", manual=True)
+
+    def resolve_human(self) -> CaseState:
+        """ESCALATED -> RESOLVED: an operator closes the case by hand."""
+        if self.current != CaseState.ESCALATED:
+            raise IllegalTransitionError(
+                f"resolve_human requires ESCALATED, got {self.current}"
+            )
+        return self._move(CaseState.RESOLVED, trigger="manual.resolve_human", manual=True)
+
     # -- core ---------------------------------------------------------------
 
     def _move(
@@ -121,9 +147,10 @@ class CaseStateMachine:
         trigger: str,
         via_stop: bool = False,
         action: Action | None = None,
+        manual: bool = False,
     ) -> CaseState:
         validate_transition(self.current, target, via_stop=via_stop, action=action)
-        if self.current is not None and is_terminal(self.current):
+        if self.current is not None and is_terminal(self.current) and not manual:
             raise IllegalTransitionError(
                 f"{self.current} is terminal and absorbing; cannot move to {target}"
             )

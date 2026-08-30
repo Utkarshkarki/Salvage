@@ -89,3 +89,37 @@ def test_run_decision_flow_requires_decided() -> None:
     machine = CaseStateMachine(initial=CaseState.INGESTED)
     with pytest.raises(IllegalTransitionError):
         run_decision_flow(machine, Action.STOP)
+
+
+def test_approve_retry_from_escalated() -> None:
+    """An operator can deliberately re-open an ESCALATED case to ACTING."""
+    m = CaseStateMachine(initial=CaseState.ESCALATED)
+    assert m.approve_retry() == CaseState.ACTING
+
+
+def test_resolve_human_from_escalated() -> None:
+    """An operator can close an ESCALATED case to RESOLVED by hand."""
+    m = CaseStateMachine(initial=CaseState.ESCALATED)
+    assert m.resolve_human() == CaseState.RESOLVED
+
+
+def test_manual_overrides_require_escalated() -> None:
+    """Manual overrides are only legal from ESCALATED — never from a working state."""
+    for start in (CaseState.INGESTED, CaseState.DIAGNOSED, CaseState.DECIDED,
+                  CaseState.ACTING, CaseState.RESOLVED, CaseState.FAILED):
+        m = CaseStateMachine(initial=start)
+        with pytest.raises(IllegalTransitionError):
+            m.approve_retry()
+        with pytest.raises(IllegalTransitionError):
+            m.resolve_human()
+
+
+def test_manual_transition_is_audited_via_listener() -> None:
+    captured: list[tuple[CaseState | None, str, CaseState]] = []
+
+    def listener(prev, trigger, nxt):
+        captured.append((prev, trigger, nxt))
+
+    m = CaseStateMachine(initial=CaseState.ESCALATED, on_transition=listener)
+    m.approve_retry()
+    assert captured[-1] == (CaseState.ESCALATED, "manual.approve_retry", CaseState.ACTING)

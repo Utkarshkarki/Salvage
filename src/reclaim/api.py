@@ -12,16 +12,19 @@ from __future__ import annotations
 
 import html
 import logging
+import os
+import tempfile
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Header, Request, Response
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from . import repo
 from .config import Settings, get_settings
 from .db import Database, get_db, init_schema, RecoveryCaseRow
-from .models import AuditLogEntry
+from .models import AuditLogEntry, CaseState
+from .state_machine import IllegalTransitionError
 from .webhook import (
     EVENT_ID_HEADER,
     SIGNATURE_HEADER,
@@ -158,6 +161,8 @@ def case_detail(case_id: str, fmt: str = "html") -> Response:
             }
         )
 
+    controls = _ESCALATED_CONTROLS(case_id) if row.state == CaseState.ESCALATED.value else ""
+
     page = f"""<!doctype html>
 <html><head><meta charset="utf-8"><title>Case {html.escape(case_id)} — Reclaim</title>
 <style>{_DASH_CSS}</style></head><body>
@@ -175,9 +180,163 @@ def case_detail(case_id: str, fmt: str = "html") -> Response:
     &middot; ingested {row.created_at:%Y-%m-%d %H:%M:%S} UTC</div>
 </div>
 {_trail_html(trail)}
+{controls}
 <div class="footer"><a href="/dashboard">&larr; back to all cases</a></div>
 </body></html>"""
     return HTMLResponse(page)
+
+
+def _ESCALATED_CONTROLS(case_id: str) -> str:
+    """Operator buttons for an ESCALATED case.
+
+    Clearly framed as MANUAL decision — the audit trail marks these
+    ``stage=manual_override`` so a viewer sees a human act, never the agent's.
+    """
+    cid = html.escape(case_id)
+    return (
+        '<div class="card control-plane">'
+        '<h3 class="case-title">Operator actions <span class="state st-other">MANUAL</span></h3>'
+        '<p class="sub">These are HUMAN decisions, not the agent\'s — they are written to the '
+        'audit trail as <code>manual_override</code>.</p>'
+        f'<form method="post" action="/cases/{cid}/approve_retry" style="display:inline">'
+        '<button type="submit">Approve manual retry</button></form> '
+        f'<form method="post" action="/cases/{cid}/resolve_human" style="display:inline">'
+        '<button type="submit">Mark resolved by human</button></form>'
+        "</div>"
+    )
+
+
+@app.post("/cases/{case_id}/approve_retry")
+def approve_retry_endpoint(case_id: str) -> Response:
+    """Operator: authorise a retry for an ESCALATED case (manual_override)."""
+    from .manual import approve_manual_retry
+
+    db = get_db_dep()
+    settings = get_settings_dep()
+    try:
+        approve_manual_retry(db, case_id, settings)
+    except (KeyError, IllegalTransitionError) as exc:
+        return JSONResponse(status_code=409, content={"error": f"action not legal: {exc}"})
+    return RedirectResponse(url=f"/cases/{case_id}", status_code=303)
+
+
+@app.post("/cases/{case_id}/resolve_human")
+def resolve_human_endpoint(case_id: str) -> Response:
+    """Operator: mark an ESCALATED case resolved by a human (manual_override)."""
+    from .manual import resolve_human
+
+    db = get_db_dep()
+    settings = get_settings_dep()
+    try:
+        resolve_human(db, case_id, settings)
+    except (KeyError, IllegalTransitionError) as exc:
+        return JSONResponse(status_code=409, content={"error": f"action not legal: {exc}"})
+    return RedirectResponse(url=f"/cases/{case_id}", status_code=303)
+
+
+# ---------------------------------------------------------------------------
+# B3: Customer-facing status page — /status/{case_id}
+# ---------------------------------------------------------------------------
+# A simplified, plain-language view read from the SAME underlying audit/case
+# data as the merchant dashboard — no separate data model, just a filtered
+# rendering. Deliberately exposes NO internal rule IDs, stage names, or
+# LLM/fallback jargon.
+#
+# NOTE (tradeoff, flagged): this page is addressed by the raw case_id (the
+# subscription id), which could be guessed. A production deployment should key
+# it on a non-guessable, per-case share token. Kept as case_id for consistency
+# with the merchant dashboard and to avoid a schema migration in this phase.
+
+_CAUSE_PLAIN: dict[str, str] = {
+    "insufficient_funds": "Your payment was declined because the account had insufficient funds.",
+    "card_expired": "The card we had on file has expired, so it could not be used.",
+    "bank_timeout": "Your bank did not respond in time to the payment request.",
+    "do_not_honor": "Your bank declined the payment.",
+    "mandate_revoked": "The standing authorization (mandate) for this subscription was revoked.",
+    "unknown": "We could not pinpoint the exact reason for the payment failure.",
+}
+
+
+def _customer_view(row: RecoveryCaseRow, trail: list[AuditLogEntry]) -> dict[str, str]:
+    """Build a plain-language snapshot from the audit trail (customer-safe)."""
+    # What happened (cause from the Diagnose decision: "cause=X conf=Y").
+    cause = "unknown"
+    for e in trail:
+        if e.stage == "diagnose" and e.decision.startswith("cause="):
+            cause = e.decision.split("cause=")[1].split()[0]
+            break
+    reason = _CAUSE_PLAIN.get(cause, _CAUSE_PLAIN["unknown"])
+
+    # What happens next (next action + any scheduled retry date).
+    scheduled_at: str | None = None
+    last_action = ""
+    recovered = False
+    stopped = False
+    for e in trail:
+        if isinstance(e.input_state, dict) and e.input_state.get("scheduled_at"):
+            scheduled_at = str(e.input_state["scheduled_at"])
+        if e.stage == "act" and e.action_taken:
+            last_action = e.action_taken or last_action
+        if e.stage == "act" and e.outcome and "retry_succeeded" in e.outcome:
+            recovered = True
+        if e.stage == "act" and e.action_taken == "stop":
+            stopped = True
+
+    state = row.state
+    # Heading + next-step, plain language only.
+    if state == CaseState.ESCALATED.value:
+        heading = "Under review by our team"
+        next_step = "Our team is looking into this and will reach out if we need anything from you."
+    elif recovered:
+        heading = "Resolved"
+        next_step = "Your payment has been successfully processed. Thank you."
+    elif stopped:
+        heading = "Closed"
+        next_step = "No further automatic payment attempts will be made for this charge."
+    elif state == CaseState.FAILED.value:
+        heading = "Payment unsuccessful"
+        next_step = "We were unable to complete this payment. Please check your payment method."
+    elif scheduled_at:
+        heading = "We're on it"
+        next_step = f"We'll automatically retry this payment on {scheduled_at.replace('T', ' ')[:16]} UTC."
+    else:
+        heading = "In progress"
+        next_step = "We're working to resolve this. No action is needed from you."
+    return {"heading": heading, "reason": reason, "next_step": next_step}
+
+
+@app.get("/status/{case_id}", response_class=HTMLResponse)
+def customer_status(case_id: str) -> HTMLResponse:
+    """Customer-facing, plain-language status for one case."""
+    db = get_db_dep()
+    row = repo.get_case_row(db, case_id)
+    if row is None:
+        return HTMLResponse(
+            "<html><body><h1>Status not found</h1><p>We couldn't find that reference.</p></body></html>",
+            status_code=404,
+        )
+    trail = repo.audit_trail(db, case_id)
+    view = _customer_view(row, trail)
+    return HTMLResponse(
+        _STATUS_PAGE(case_id, view["heading"], view["reason"], view["next_step"])
+    )
+
+
+def _STATUS_PAGE(case_id: str, heading: str, reason: str, next_step: str) -> str:
+    return f"""<!doctype html>
+<html><head><meta charset="utf-8"><title>Payment status</title>
+<style>{_DASH_CSS} .status{{max-width:560px;margin:28px auto}}
+</style></head><body>
+<div class="status">
+  <h1>{html.escape(heading)}</h1>
+  <p class="sub">Reference: {html.escape(case_id)}</p>
+  <p>{html.escape(reason)}</p>
+  <p><strong>What happens next:</strong> {html.escape(next_step)}</p>
+  <p class="sub">Need help? Contact your service provider. (This is a demo view of your
+  payment recovery status.)</p>
+</div>
+</body></html>"""
+
 
 
 @app.get("/metrics")
@@ -185,6 +344,185 @@ def metrics() -> JSONResponse:
     from .metrics import compute_metrics
 
     return JSONResponse(compute_metrics(get_db_dep(), get_settings_dep()))
+
+
+# ---------------------------------------------------------------------------
+# B1: Rule Sensitivity Simulator — /simulator
+# ---------------------------------------------------------------------------
+# Lets an operator re-run the SAME seeded synthetic batch (seed=42) under a
+# set of on-the-fly threshold overrides and compare the resulting metrics with
+# the current settings. It deliberately REUSES pipeline.run_batch and
+# metrics.compute_metrics as-is — nothing is duplicated, and the real settings
+# are never mutated (overrides are passed through on a throwaway Settings copy
+# pointed at a throwaway DB).
+
+# Editable rule thresholds (subset of config.py that the simulator exposes).
+_SIM_THRESHOLD_FIELDS = (
+    "escalation_amount_threshold",
+    "escalation_days_threshold",
+    "max_retries_per_cycle",
+    "cooldown_hours",
+    "email_cap_per_7d",
+)
+
+
+def _run_simulated_batch(settings: Settings, overrides: dict[str, object]) -> dict[str, object]:
+    """Run the seed-42 synthetic batch on a throwaway DB with ``overrides``.
+
+    Returns the same shape as :func:`reclaim.metrics.compute_metrics`. Uses a
+    temp-file SQLite DB (a shared in-memory engine cannot be read across the
+    thread pool run_batch uses) and tears it down afterwards.
+    """
+    from .pipeline import run_batch
+    from .metrics import compute_metrics
+    from .synthetic import generate_batch
+    from .batch import ingest_batch
+
+    with tempfile.TemporaryDirectory() as td:
+        url = f"sqlite:///{os.path.join(td, 'sim.db')}"
+        sim_settings = settings.model_copy(update={"database_url": url, **overrides})
+        db = Database(sim_settings)
+        init_schema(db.engine)
+        batch = generate_batch(seed=42, webhook_secret=settings.razorpay_webhook_secret)
+        new_ids, _dupes, _rej = ingest_batch(db, batch, sim_settings)
+        run_batch(new_ids, settings=sim_settings, db=db)
+        metrics = compute_metrics(db, sim_settings)
+        db.close()
+        return metrics
+
+
+def _sim_metric_key(metrics: dict[str, object]) -> list[tuple[str, str]]:
+    """Human labels for the comparison rows, read straight from compute_metrics."""
+    def _pct(v: object) -> str:
+        return f"{float(v) * 100:.1f}%"
+
+    esc = int(metrics.get("escalated_cases", 0))
+    stopped = int(metrics.get("stopped_cases", 0))
+    return [
+        ("Total cases", str(metrics.get("total_cases", 0))),
+        ("Recovery rate", _pct(metrics.get("recovery_rate", 0.0))),
+        ("Amount recovered (INR)", f"{float(metrics.get('recovered_amount', 0.0)):,.2f}"),
+        ("Escalated (human)", str(esc)),
+        ("Stopped (deliberate halt)", str(stopped)),
+        ("LLM call failures", str(metrics.get("llm_call_failures", 0))),
+        ("Stopping-rule overrides", str(metrics.get("stopping_rule_overrides", 0))),
+        ("Stub-mode actions", str(metrics.get("stub_mode_actions", 0))),
+    ]
+
+
+@app.get("/simulator", response_class=HTMLResponse)
+def simulator_form() -> HTMLResponse:
+    settings = get_settings_dep()
+    return HTMLResponse(_SIMULATOR_PAGE(settings, baseline=None, simulated=None, error=None))
+
+
+@app.post("/simulator", response_class=HTMLResponse)
+async def simulator_run(request: Request) -> HTMLResponse:
+    settings = get_settings_dep()
+    form = await request.form()
+    overrides: dict[str, object] = {}
+    error: str | None = None
+    # Build overrides from the submitted values, coercing to the field's type.
+    for f in _SIM_THRESHOLD_FIELDS:
+        raw = form.get(f)
+        if raw is None or str(raw).strip() == "":
+            continue
+        current = getattr(settings, f)
+        try:
+            if isinstance(current, bool):
+                overrides[f] = str(raw).strip().lower() in ("1", "true", "yes", "on")
+            else:
+                num = float(str(raw).strip())
+                overrides[f] = int(num) if isinstance(current, int) else num
+        except (TypeError, ValueError):
+            error = f"Could not parse a number for '{f}'."
+            break
+
+    baseline: dict[str, object] | None = None
+    simulated: dict[str, object] | None = None
+    if error is None:
+        try:
+            baseline = _run_simulated_batch(settings, {})  # current thresholds
+            simulated = _run_simulated_batch(settings, overrides)  # proposed
+        except Exception as exc:  # never let a simulation crash the page
+            logger.error("SIMULATOR_ERROR err=%s", exc)
+            error = f"Simulation failed: {type(exc).__name__}: {exc}"
+    return HTMLResponse(_SIMULATOR_PAGE(settings, baseline, simulated, error))
+
+
+def _sim_threshold_inputs(settings: Settings) -> str:
+    """Render the editable threshold inputs, prefilled with current values."""
+    rows: list[str] = []
+    for f in _SIM_THRESHOLD_FIELDS:
+        val = getattr(settings, f)
+        step = "1" if isinstance(val, int) else "0.01"
+        rows.append(
+            f'<label><span class="sim-label">{html.escape(f)}</span>'
+            f'<input type="number" name="{html.escape(f)}" value="{html.escape(str(val))}" '
+            f'step="{step}" class="sim-input"></label>'
+        )
+    return "".join(rows)
+
+
+def _sim_comparison(baseline: dict[str, object], simulated: dict[str, object]) -> str:
+    rows_html: list[str] = []
+    for label, bval in _sim_metric_key(baseline):
+        sval = dict(_sim_metric_key(simulated))[label]
+        changed = bval != sval
+        cls = " class='chg'" if changed else ""
+        rows_html.append(
+            f"<tr><td>{html.escape(label)}</td>"
+            f"<td>{html.escape(bval)}</td>"
+            f"<td{cls}>{html.escape(sval)}</td></tr>"
+        )
+    return "".join(rows_html)
+
+
+def _SIMULATOR_PAGE(
+    settings: Settings,
+    baseline: dict[str, object] | None,
+    simulated: dict[str, object] | None,
+    error: str | None,
+) -> str:
+    err_html = f'<p class="sim-error">{html.escape(error)}</p>' if error else ""
+    result_html = ""
+    if baseline is not None and simulated is not None:
+        result_html = (
+            '<div class="card"><h3 class="case-title">Before / After comparison</h3>'
+            '<p class="sub">Both columns run the same seed-42 synthetic batch — '
+            'left is current thresholds, right is your simulated thresholds.</p>'
+            '<table class="sim-table"><thead><tr>'
+            '<th>Metric</th><th>Current thresholds</th><th>Simulated thresholds</th>'
+            "</tr></thead><tbody>"
+            f"{_sim_comparison(baseline, simulated)}"
+            "</tbody></table></div>"
+        )
+    return f"""<!doctype html>
+<html><head><meta charset="utf-8"><title>Reclaim — Rule Sensitivity Simulator</title>
+<style>{_DASH_CSS} .sim-form{{display:flex;flex-direction:column;gap:8px;max-width:420px}}
+.sim-label{{font-size:12.5px;color:#475569;margin-bottom:2px;display:block}}
+.sim-input{{padding:6px 8px;border:1px solid #cbd5e1;border-radius:6px;width:100%}}
+.chg{{color:#166534;font-weight:700}}
+.sim-table{{width:100%;border-collapse:collapse;margin-top:8px}}
+.sim-table th,.sim-table td{{text-align:left;padding:7px 10px;border-bottom:1px solid #e2e8f0;font-size:13px}}
+.sim-table th{{color:#475569;font-size:12px;text-transform:uppercase;letter-spacing:.04em}}
+.sim-error{{color:#991b1b;font-weight:600}}
+</style></head><body>
+<h1>Reclaim — Rule Sensitivity Simulator</h1>
+<p class="sub">Tune the stopping-rule thresholds and re-run the same seed-42 synthetic batch
+(before/after comparison against current thresholds). No settings are mutated; each run uses a
+throwaway database.</p>
+<p class="back"><a href="/dashboard">&larr; back to dashboard</a></p>
+{err_html}
+<div class="card">
+  <h3 class="case-title">Stopping-rule thresholds</h3>
+  <form method="post" action="/simulator" class="sim-form">
+    {_sim_threshold_inputs(settings)}
+    <button type="submit" style="margin-top:10px">Run simulation</button>
+  </form>
+</div>
+{result_html}
+</body></html>"""
 
 
 @app.get("/dashboard", response_class=HTMLResponse)
