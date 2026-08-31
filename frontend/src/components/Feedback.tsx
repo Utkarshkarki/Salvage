@@ -20,13 +20,7 @@ export function errorMessage(err: unknown): string {
 }
 
 /** Full-width inline error banner with a retry action. */
-export function ErrorAlert({
-  message,
-  onRetry,
-}: {
-  message: string;
-  onRetry?: () => void;
-}) {
+export function ErrorAlert({ message, onRetry }: { message: string; onRetry?: () => void }) {
   return (
     <div
       role="alert"

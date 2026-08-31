@@ -15,11 +15,7 @@ const Simulator = lazy(() => import("./pages/Simulator"));
 
 function PageFallback() {
   return (
-    <div
-      role="status"
-      aria-live="polite"
-      className="py-16 text-center text-sm text-ink-muted"
-    >
+    <div role="status" aria-live="polite" className="py-16 text-center text-sm text-ink-muted">
       Loading page…
     </div>
   );

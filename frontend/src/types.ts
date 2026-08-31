@@ -18,13 +18,7 @@
  */
 
 export type CaseState =
-  | "INGESTED"
-  | "DIAGNOSED"
-  | "DECIDED"
-  | "ACTING"
-  | "RESOLVED"
-  | "ESCALATED"
-  | "FAILED";
+  "INGESTED" | "DIAGNOSED" | "DECIDED" | "ACTING" | "RESOLVED" | "ESCALATED" | "FAILED";
 
 export type Cause =
   | "insufficient_funds"
@@ -35,11 +29,7 @@ export type Cause =
   | "unknown";
 
 export type Action =
-  | "retry_now"
-  | "retry_scheduled"
-  | "request_payment_method_update"
-  | "escalate_human"
-  | "stop";
+  "retry_now" | "retry_scheduled" | "request_payment_method_update" | "escalate_human" | "stop";
 
 /** A1 — one row of the paginated case list. */
 export interface RecoveryCaseSummary {

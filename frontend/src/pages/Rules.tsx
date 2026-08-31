@@ -19,13 +19,15 @@ export default function Rules() {
         Active Stopping Rules
       </h1>
       <p className="mb-6 max-w-2xl text-sm text-ink-muted">
-        These rules are enforced in code over every LLM proposal — the model never has the last
-        word on money. They are expressed declaratively and rendered here in plain language so the
-        policy itself is an auditable artifact. The first matching rule (by priority) overrides the
-        LLM’s proposal.
+        These rules are enforced in code over every LLM proposal — the model never has the last word
+        on money. They are expressed declaratively and rendered here in plain language so the policy
+        itself is an auditable artifact. The first matching rule (by priority) overrides the LLM’s
+        proposal.
       </p>
 
-      {isError && <ErrorAlert message={`Could not load rules: ${error.message}`} onRetry={refetch} />}
+      {isError && (
+        <ErrorAlert message={`Could not load rules: ${error.message}`} onRetry={refetch} />
+      )}
 
       {isPending ? (
         <TableSkeleton rows={7} columns={4} />

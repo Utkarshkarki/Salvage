@@ -9,12 +9,7 @@ export function cn(...parts: (string | false | null | undefined)[]): string {
 }
 
 export function Skeleton({ className }: { className?: string }) {
-  return (
-    <div
-      aria-hidden="true"
-      className={cn("animate-pulse rounded-md bg-line", className)}
-    />
-  );
+  return <div aria-hidden="true" className={cn("animate-pulse rounded-md bg-line", className)} />;
 }
 
 export function TableSkeleton({ rows = 5, columns = 5 }: { rows?: number; columns?: number }) {

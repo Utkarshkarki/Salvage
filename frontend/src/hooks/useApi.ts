@@ -11,12 +11,7 @@
  * would be over-engineering for a read-mostly tool.
  */
 
-import {
-  keepPreviousData,
-  useMutation,
-  useQuery,
-  useQueryClient,
-} from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   approveRetry,
   fetchCaseDetail,

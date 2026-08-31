@@ -44,8 +44,8 @@ export class ErrorBoundary extends Component<Props, State> {
             Something went wrong{this.props.label ? ` on ${this.props.label}` : ""}.
           </h1>
           <p className="mb-4 text-sm text-ink-muted">
-            An unexpected error occurred while rendering this section. The rest of the app
-            is unaffected.
+            An unexpected error occurred while rendering this section. The rest of the app is
+            unaffected.
           </p>
           <button
             type="button"

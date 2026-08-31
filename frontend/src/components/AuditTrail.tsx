@@ -18,7 +18,8 @@ function outcomeTone(outcome: string | null): string {
   const o = outcome ?? "";
   if (o.includes("OVERRIDE")) return "bg-override-soft text-override border-override-border";
   if (o === "STOPPED") return "bg-stop-soft text-stop border-stop-border";
-  if (o.includes("retry_succeeded")) return "bg-recovered-soft text-recovered border-recovered-border";
+  if (o.includes("retry_succeeded"))
+    return "bg-recovered-soft text-recovered border-recovered-border";
   if (o.includes("ESCALATED")) return "bg-escalated-soft text-escalated border-escalated-border";
   return "bg-canvas text-ink-muted border-line";
 }
@@ -26,9 +27,7 @@ function outcomeTone(outcome: string | null): string {
 function Provenance({ prov }: { prov: LLMProvenance }) {
   return (
     <div className="mt-2 rounded-md border border-line bg-canvas/60 px-3 py-2 text-[11px] leading-relaxed text-ink-muted">
-      <span className="font-semibold uppercase tracking-wide text-ink-faint">
-        LLM provenance:{" "}
-      </span>
+      <span className="font-semibold uppercase tracking-wide text-ink-faint">LLM provenance: </span>
       {prov.model} · {prov.prompt_version} · mode={prov.mode} ·{" "}
       <span className="font-mono">hash {prov.prompt_hash.slice(0, 10)}…</span>
     </div>
@@ -60,7 +59,9 @@ function StageBlock({ entry }: { entry: AuditLogEntry }) {
           {entry.stage}
         </span>
         <span className="text-sm font-semibold text-ink">{entry.decision ?? "—"}</span>
-        <span className={`rounded-full border px-2 py-0.5 text-xs font-semibold ${outcomeTone(entry.outcome)}`}>
+        <span
+          className={`rounded-full border px-2 py-0.5 text-xs font-semibold ${outcomeTone(entry.outcome)}`}
+        >
           {entry.outcome ?? "—"}
         </span>
         {isOverride && (
@@ -93,9 +94,7 @@ function StageBlock({ entry }: { entry: AuditLogEntry }) {
 /** The full append-only decision trail, oldest first. */
 export function AuditTrail({ trail }: { trail: AuditLogEntry[] }) {
   if (!trail.length) {
-    return (
-      <p className="my-4 text-sm italic text-ink-muted">No decision trail recorded.</p>
-    );
+    return <p className="my-4 text-sm italic text-ink-muted">No decision trail recorded.</p>;
   }
   return (
     <ol className="space-y-3" aria-label="Decision trail">

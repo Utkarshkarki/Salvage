@@ -19,7 +19,9 @@ type MutationShape = ReturnType<typeof useManualAction>["approveRetry"];
 // The component only consumes isPending + mutateAsync from the mutation result,
 // so a minimal mock object is sufficient. Cast through `unknown` because the
 // real UseMutationResult has many unrelated fields a mocked value won't have.
-function makeMutation(overrides: Partial<{ isPending: boolean; mutateAsync: () => Promise<void> }> = {}): MutationShape {
+function makeMutation(
+  overrides: Partial<{ isPending: boolean; mutateAsync: () => Promise<void> }> = {},
+): MutationShape {
   return {
     isPending: false,
     isError: false,
@@ -49,12 +51,8 @@ describe("ManualActions", () => {
 
   it("renders both override action buttons", () => {
     renderWithClient();
-    expect(
-      screen.getByRole("button", { name: /approve manual retry/i }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: /mark resolved by human/i }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /approve manual retry/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /mark resolved by human/i })).toBeInTheDocument();
   });
 
   it("disables both buttons while a request is pending", () => {
@@ -63,20 +61,14 @@ describe("ManualActions", () => {
       resolveHuman: makeMutation({ isPending: true }),
     });
     renderWithClient();
-    expect(
-      screen.getByRole("button", { name: /approving retry/i }),
-    ).toBeDisabled();
-    expect(
-      screen.getByRole("button", { name: /resolving/i }),
-    ).toBeDisabled();
+    expect(screen.getByRole("button", { name: /approving retry/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /resolving/i })).toBeDisabled();
   });
 
   it("surface the distinct 409 case (already resolved elsewhere)", async () => {
     const user = userEvent.setup();
     const approve = makeMutation({
-      mutateAsync: vi
-        .fn()
-        .mockRejectedValue(new ApiError(409, "action not legal: ...")),
+      mutateAsync: vi.fn().mockRejectedValue(new ApiError(409, "action not legal: ...")),
     });
     vi.mocked(useManualAction).mockReturnValue({
       approveRetry: approve,

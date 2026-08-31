@@ -49,8 +49,8 @@ export default function CustomerStatus() {
               <strong>What happens next:</strong> {data.next_step}
             </p>
             <p className="mt-4 text-xs text-ink-faint">
-              Need help? Contact your service provider. This is a demo view of your payment
-              recovery status.
+              Need help? Contact your service provider. This is a demo view of your payment recovery
+              status.
             </p>
           </>
         )}

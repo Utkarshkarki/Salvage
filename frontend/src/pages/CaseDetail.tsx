@@ -71,8 +71,8 @@ export default function CaseDetail() {
           className="mb-5 rounded-lg border border-line bg-surface px-4 py-3 text-sm text-ink-muted"
           aria-live="polite"
         >
-          This case is in the <strong>{data.state}</strong> state — no manual override actions
-          are available.
+          This case is in the <strong>{data.state}</strong> state — no manual override actions are
+          available.
         </p>
       )}
 

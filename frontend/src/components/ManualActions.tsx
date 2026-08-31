@@ -45,8 +45,8 @@ export function ManualActions({ caseId }: { caseId: string }) {
         Operator actions
       </h2>
       <p className="mb-3 text-sm text-ink-muted">
-        These are <strong>human decisions</strong>, not the agent’s — they are written to the
-        audit trail as <code className="rounded bg-surface px-1">manual_override</code>.
+        These are <strong>human decisions</strong>, not the agent’s — they are written to the audit
+        trail as <code className="rounded bg-surface px-1">manual_override</code>.
       </p>
       <div className="flex flex-wrap gap-3">
         <button

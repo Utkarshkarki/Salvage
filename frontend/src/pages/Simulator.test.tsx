@@ -51,7 +51,10 @@ describe("Simulator", () => {
     const user = userEvent.setup();
     const mock = vi
       .mocked(runSimulation)
-      .mockResolvedValue({ baseline: BASELINE, simulated: SIMULATED } satisfies SimulatorComparison);
+      .mockResolvedValue({
+        baseline: BASELINE,
+        simulated: SIMULATED,
+      } satisfies SimulatorComparison);
 
     renderPage();
     const amountInput = screen.getByLabelText(/escalation amount threshold/i);

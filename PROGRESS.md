@@ -2,7 +2,7 @@
 
 > Read this file first at the start of every session before doing anything else.
 
-**Status:** Pipeline complete. Phase 1 core + Phase 2 deepening done. **Phase 3 (competitive hardening) COMPLETE:** adversarial resilience suite, WAL mode, economic-floor rule R7, stale-lock sweep (Celery periodic), policy-as-code rules + `/rules` page, LLM provenance logging, verification-only Subscriptions/Settlements integration, distributed-idempotency design note, and all submission artifacts. Tests green: **99 collected across 12 files**, all passing. (A1 ngrok/webhook registration still needs the operator's real Razorpay secret — live paths are env-gated and documented.)
+**Status:** Pipeline complete. Phases 1–3 done. **Phase 4 (production-grade React frontend) COMPLETE:** `/api/v1/*` JSON namespace (thin wrappers over tested logic) + a strict-mode Vite/React/TS/Tailwind/React-Query SPA (`frontend/`) — Case List, Case Detail w/ override actions, Simulator, Rules, Customer Status pages + Vitest component tests + CORS-for-local-dev. Tests green: backend **117 across 13 files** (99 prior + 18 HTTP-layer `test_api_v1.py`), frontend 6/2. (A1 ngrok/webhook registration still needs the operator's real Razorpay secret — live paths are env-gated and documented.)
 
 ## What's done
 
@@ -137,3 +137,104 @@ verified by the full suite). **Test count: 81 → 99, all passing.**
 The policy-as-code refactor (3.6) rewrote `stopping_rules.enforce()` which the Phase 2 tests
 cover (R1–R6). This was the single change to already-tested core logic; it was done as a
 behavior-preserving, data-driven rewrite (full suite green, 99/99) rather than an inline reorder.
+
+---
+
+## Phase 4 — Production-grade React frontend (this build)
+
+Part A (backend `/api/v1/*` JSON namespace) plus a Vite + React + TypeScript SPA in `frontend/`.
+Strictly additive to Phases 1–3: the state machine, 7 stopping rules (R1–R7), the pipeline, the
+LLM client, the webhook boundary, the persistence layer, and all 99 pre-Phase-4 tests were left
+untouched. **Backend test count: 99 → 117, all passing** (the 18 new `tests/test_api_v1.py` are
+HTTP-layer-only — they don't re-prove business logic already covered by `test_manual.py`,
+`test_simulator.py`, etc.).
+
+### Part A — `/api/v1/*` JSON namespace
+
+New `src/reclaim/api_v1.py` (mounted in `api.py` below the CORS middleware) — a **parallel
+surface** to the HTML routes, each endpoint a thin wrapper over the SAME tested function the
+corresponding HTML route calls (never a reimplementation):
+
+- **A1** `GET /api/v1/cases` — filtered + paginated at the SQL query layer (new
+  `repo.list_cases`, not a Python slice), `state` filter, `limit`/`offset` bounded (422 outside
+  bounds).
+- **A2** `GET /api/v1/cases/{case_id}` — the exact `case_detail(fmt=json)` payload shape plus the
+  richer audit entries (`agent_reasoning` + `input_state` carrying `llm_provenance`).
+- **A3** `GET /api/v1/metrics` — wraps `metrics.compute_metrics` as-is (full 17-key shape).
+- **A4** `GET /api/v1/rules` — wraps `stopping_rules.describe_rules` (R1–R7 with live values).
+- **A5** `POST /api/v1/simulator/run` — calls the shared `_run_simulated_batch` (seed-42 batch on
+  a throwaway temp-file DB under a settings *copy*; real settings never mutated — verified by a
+  dedicated test). `_SIM_THRESHOLD_FIELDS` / `_run_simulated_batch` / `_sim_metric_key`,
+  `_CAUSE_PLAIN` / `customer_view` were **moved to a new `src/reclaim/api_views.py`** so the HTML
+  and JSON surfaces share one implementation and can't drift (`api.py` re-imports them so
+  `tests/test_simulator.py` etc. resolve unchanged).
+- **A6** `POST /api/v1/cases/{id}/approve_retry`, `/resolve_human` — thin wrappers over
+  `manual.py`; return updated case JSON (A2 shape), 404 unknown case, 409 not-ESCALATED
+  (`IllegalTransitionError`), matching the HTML routes' error semantics sans redirect.
+- **A7** `GET /api/v1/status/{case_id}` — the shared `customer_view` as `{heading, reason,
+  next_step}`, 404 if unknown.
+- **A8** CORS — middleware allows the Vite dev origins only (`http://localhost:5173`,
+  `http://127.0.0.1:5173`, from `RECLAIM_CORS_ORIGINS` in `config.py`). Not a wildcard; the
+  production caveat (serve SPA+API from one origin, or narrow the list to the deployed origin) is
+  flagged loudly in code + `frontend/README.md`.
+- **A9** `tests/test_api_v1.py` — 18 HTTP-layer tests: happy paths, state filter, pagination
+  bounds (422 on out-of-range), A2 provenance in the trail, A3/A4 shapes, A5 does-not-mutate-
+  real-settings, A6 404/409, A7 404 + no-jargon.
+
+### Part B — React SPA (`frontend/`)
+
+Built in the mandated order: B1–B4 foundation first, then the five pages, cross-cutting B6 applied
+per-page, then B7 tests, then Part C.
+
+- **B1 Scaffolding** — `npm create vite` react-ts shape; TypeScript **strict** (`noUnusedLocals`,
+  `noUncheckedIndexedAccess`), ESLint (`typescript-eslint` + react-hooks/refresh) + Prettier,
+  Tailwind CSS. Design tokens centralized in `tailwind.config.ts` (diagnose=blue, decide=purple,
+  act=teal, override=amber, recovered=green, escalated=red, LLM-failure-fallback=orange) — no
+  raw hex scattered in components.
+- **B2 Types** — hand-maintained `src/types.ts` mirroring the Python enums/fields exactly
+  (decision + rationale documented: the surface is small/stable and `test_api_v1.py` asserts the
+  wire shapes, so codegen's added build-time + run-live dependency buys nothing now; openapi-
+  typescript is the documented upgrade path if the API grows).
+- **B3 Data fetching** — TanStack Query (server-state: caching, dedup, auto-refetch of the case
+  detail after an override mutation invalidates) + a single typed `apiClient` (`fetch` wrapper:
+  base URL, `ApiError` with status + detail, JSON). Justified against the Phase 2 "avoid heavy
+  state management" guidance — this is server state, not a client store (no Redux).
+- **B5.1 Case List** — state filter, pagination (query-layer, stable ordering via `repo.list_cases`),
+  click-through, skeleton loading, explicit empty state, keepPreviousData across pages.
+- **B5.2 Case Detail** — full audit trail as distinct stage blocks (badge, decision, outcome chip,
+  override tag when outcome contains `OVERRIDE`, fallback tag when `fallback_triggered`,
+  provenance); override buttons (Approve manual retry / Mark resolved by human) rendered only for
+  ESCALATED, disabled while pending, A6 results invalidate the query, and the **409 case is
+  surfaced distinctly** ("already resolved elsewhere") instead of a generic failure.
+- **B5.3 Simulator** — editable threshold form → A5, before/after rendered as CSS-based bar
+  comparison (no charting library for a single view).
+- **B5.4 Rules** — A4 rendered as the live "what governs this system" page.
+- **B5.5 Customer Status** — routed OUTSIDE the app Layout (no dashboard chrome), plain-language
+  A7 data, no rule ids / stage names / jargon.
+- **B6 cross-cutting** — route-level `ErrorBoundary`, loading + error states on every fetcher,
+  semantic HTML + heading hierarchy + aria-labels + visible focus rings, responsive (min-width
+  tables scroll in `overflow-x-auto`, no horizontal page overflow), `React.lazy`+`Suspense` route
+  code-splitting (confirmed in the build: separate chunks per page), no browser console
+  errors/warnings.
+- **B7 Tests** — Vitest + React Testing Library, **6 tests / 2 files**: the override-action flow
+  (buttons render, disabled while pending, distinct 409 vs generic error) and the Simulator form
+  (correct payload shape, comparison renders on success). E2E (Playwright/Cypress) deliberately
+  **not** added — trade-off documented in `frontend/README.md` (small local demo, read-mostly,
+  logic already covered at component + backend-HTTP layers; worth adding a single smoke spec only
+  when there's a real deployment target + CI).
+
+### Part C — wiring & verification
+
+- `scripts/dev.sh` (bash) + `scripts/dev.ps1` (Windows) start `uvicorn` and the Vite dev server
+  together; two-terminal instructions also in `frontend/README.md`.
+- `npm run build` → **clean production bundle, no errors** (verified; 95 modules, per-route chunks,
+  `dist/` produced). `npm run lint` clean (0 errors), `npm test` green.
+- The Vite dev server proxies `/api → :8000` so no CORS in dev; the built app uses relative URLs.
+  The CORS/dev-default caveat is documented in `frontend/README.md`, not presented as deployment-ready.
+
+### Phase 4 files & test total
+
+Backend: `src/reclaim/api_v1.py` (new), `src/reclaim/api_views.py` (new), `tests/test_api_v1.py` (new),
+`repo.py` `+list_cases`, `config.py` `+cors_origins`. Frontend: `frontend/**` (Vite + React + TS SPA).
+**Full backend suite: 117 collected across 13 files, all passing.** Frontend: 6 tests / 2 files,
+production build + lint clean.

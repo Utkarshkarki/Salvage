@@ -63,8 +63,5 @@ export function resolveHuman(caseId: string) {
 
 /** A7 */
 export function fetchCustomerStatus(caseId: string, signal?: AbortSignal) {
-  return apiClient.get<CustomerStatusView>(
-    `/api/v1/status/${encodeURIComponent(caseId)}`,
-    signal,
-  );
+  return apiClient.get<CustomerStatusView>(`/api/v1/status/${encodeURIComponent(caseId)}`, signal);
 }

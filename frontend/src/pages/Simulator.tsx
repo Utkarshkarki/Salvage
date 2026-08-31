@@ -18,7 +18,17 @@ const FIELDS: Array<{ key: keyof SimulatorOverrides; label: string; step: string
  * thresholds. Pure CSS (no charting library) — appropriate for a single
  * comparison view (B5.3).
  */
-function MetricBar({ label, base, sim, fmt }: { label: string; base: number; sim: number; fmt: (n: number) => string }) {
+function MetricBar({
+  label,
+  base,
+  sim,
+  fmt,
+}: {
+  label: string;
+  base: number;
+  sim: number;
+  fmt: (n: number) => string;
+}) {
   const max = Math.max(Math.abs(base), Math.abs(sim), 1);
   const basePct = (Math.abs(base) / max) * 100;
   const simPct = (Math.abs(sim) / max) * 100;
@@ -29,9 +39,7 @@ function MetricBar({ label, base, sim, fmt }: { label: string; base: number; sim
         <span className="font-medium text-ink">{label}</span>
         <span className="tabular-nums text-ink-muted">
           {fmt(base)} <span aria-hidden="true">→</span>{" "}
-          <strong className={changed ? "text-recovered" : "text-ink"}>
-            {fmt(sim)}
-          </strong>
+          <strong className={changed ? "text-recovered" : "text-ink"}>{fmt(sim)}</strong>
         </span>
       </div>
       <div className="flex h-4 w-full gap-4 overflow-hidden">
@@ -52,20 +60,55 @@ function MetricBar({ label, base, sim, fmt }: { label: string; base: number; sim
 
 function Comparison({ data }: { data: SimulatorComparison }) {
   const rows: Array<{ label: string; base: number; sim: number; fmt: (n: number) => string }> = [
-    { label: "Recovery rate", base: data.baseline.recovery_rate, sim: data.simulated.recovery_rate, fmt: (n) => `${(n * 100).toFixed(1)}%` },
-    { label: "Amount recovered", base: data.baseline.recovered_amount, sim: data.simulated.recovered_amount, fmt: formatINR },
-    { label: "Escalated (human)", base: data.baseline.escalated_cases, sim: data.simulated.escalated_cases, fmt: String },
-    { label: "Stopped (deliberate halt)", base: data.baseline.stopped_cases, sim: data.simulated.stopped_cases, fmt: String },
-    { label: "LLM call failures", base: data.baseline.llm_call_failures, sim: data.simulated.llm_call_failures, fmt: String },
-    { label: "Stopping-rule overrides", base: data.baseline.stopping_rule_overrides, sim: data.simulated.stopping_rule_overrides, fmt: String },
-    { label: "Stub-mode actions", base: data.baseline.stub_mode_actions, sim: data.simulated.stub_mode_actions, fmt: String },
+    {
+      label: "Recovery rate",
+      base: data.baseline.recovery_rate,
+      sim: data.simulated.recovery_rate,
+      fmt: (n) => `${(n * 100).toFixed(1)}%`,
+    },
+    {
+      label: "Amount recovered",
+      base: data.baseline.recovered_amount,
+      sim: data.simulated.recovered_amount,
+      fmt: formatINR,
+    },
+    {
+      label: "Escalated (human)",
+      base: data.baseline.escalated_cases,
+      sim: data.simulated.escalated_cases,
+      fmt: String,
+    },
+    {
+      label: "Stopped (deliberate halt)",
+      base: data.baseline.stopped_cases,
+      sim: data.simulated.stopped_cases,
+      fmt: String,
+    },
+    {
+      label: "LLM call failures",
+      base: data.baseline.llm_call_failures,
+      sim: data.simulated.llm_call_failures,
+      fmt: String,
+    },
+    {
+      label: "Stopping-rule overrides",
+      base: data.baseline.stopping_rule_overrides,
+      sim: data.simulated.stopping_rule_overrides,
+      fmt: String,
+    },
+    {
+      label: "Stub-mode actions",
+      base: data.baseline.stub_mode_actions,
+      sim: data.simulated.stub_mode_actions,
+      fmt: String,
+    },
   ];
   return (
     <div className="mt-6 rounded-xl border border-line bg-surface p-4 shadow-card">
       <h2 className="mb-1 text-lg font-semibold">Before / After comparison</h2>
       <p className="mb-2 text-sm text-ink-muted">
-        Both columns re-run the same seed-42 synthetic batch: left is current thresholds, right
-        is your simulated thresholds. Real settings are never mutated.
+        Both columns re-run the same seed-42 synthetic batch: left is current thresholds, right is
+        your simulated thresholds. Real settings are never mutated.
       </p>
       <ul className="divide-y divide-line">
         {rows.map((r) => (
@@ -110,7 +153,8 @@ export default function Simulator() {
       </h1>
       <p className="mb-6 max-w-2xl text-sm text-ink-muted">
         Tune the stopping-rule thresholds and re-run the same seed-42 synthetic batch to see the
-        before/after impact. Each run uses a throwaway database; production settings are never changed.
+        before/after impact. Each run uses a throwaway database; production settings are never
+        changed.
       </p>
 
       <form

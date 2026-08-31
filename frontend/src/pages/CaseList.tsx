@@ -67,15 +67,15 @@ export default function CaseList() {
         </div>
       </div>
 
-      {isError && <ErrorAlert message={`Could not load cases: ${error.message}`} onRetry={refetch} />}
+      {isError && (
+        <ErrorAlert message={`Could not load cases: ${error.message}`} onRetry={refetch} />
+      )}
 
       {isPending ? (
         <TableSkeleton rows={8} columns={5} />
       ) : !data || data.items.length === 0 ? (
         <EmptyState
-          title={
-            isLastPageKnownEmpty ? "No more cases on this page." : "No cases yet"
-          }
+          title={isLastPageKnownEmpty ? "No more cases on this page." : "No cases yet"}
           body={
             selectedState
               ? `No cases in the "${selectedState}" state. Try a different filter.`
