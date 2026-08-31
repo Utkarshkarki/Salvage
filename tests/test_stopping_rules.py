@@ -242,3 +242,17 @@ def test_rules_are_declarative_and_described() -> None:
     assert by_id["R7"]["action"] == Action.STOP.value
     # Every rule has a non-empty human description.
     assert all(r["description"] for r in rendered)
+
+
+def test_rules_page_renders_policy_in_plain_language(settings) -> None:
+    """The /rules page renders every active rule as an auditable artifact."""
+    from reclaim.api import _RULES_PAGE
+    from reclaim.stopping_rules import describe_rules
+
+    html = _RULES_PAGE(settings, describe_rules(settings))
+    for rid in ("R1", "R7", "R2", "R3", "R4", "R5", "R6"):
+        assert f">{rid}<" in html, f"rule {rid} missing from page"
+    # The economic-floor rule reads as plain policy, not code.
+    assert "economic floor" in html
+    assert "forced action" in html.lower()
+    assert "policy-as-code" in html.lower()

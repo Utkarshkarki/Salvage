@@ -49,6 +49,54 @@ class RazorpayClient:
                 "payment/subscription retry endpoint. Refusing to guess the API shape."
             )
 
+    def subscription_status(self, subscription_id: str) -> dict[str, Any]:
+        """Verify a subscription's current status (e.g. whether mandate revoked).
+
+        VERIFICATION-ONLY: a read against the configured Subscriptions endpoint.
+        Never blocks or reverses an action. Raises on any failure so the caller
+        (verify.py) can fault-isolate and record it.
+        """
+        if self.settings.act_mode == "stub":
+            return {"subscription_id": subscription_id, "status": "active",
+                    "actor": "stub"}
+        self._require_live()
+        if not self.settings.razorpay_subscription_path:
+            raise RuntimeError(
+                "ACT_MODE=live subscription verification requires "
+                "RAZORPAY_SUBSCRIPTION_PATH set to Razorpay's Subscriptions "
+                "endpoint. Refusing to guess the API shape."
+            )
+        url = (f"{self.settings.razorpay_base_url.rstrip('/')}"
+               f"{self.settings.razorpay_subscription_path.format(subscription_id=subscription_id)}")
+        resp = httpx.get(url, auth=(self.settings.razorpay_key_id,
+                                    self.settings.razorpay_key_secret), timeout=15.0)
+        resp.raise_for_status()
+        return resp.json()
+
+    def settlement_reconciliation(self, settlement_id: str) -> dict[str, Any]:
+        """Reconcile a settlement after a retry_now recovery.
+
+        VERIFICATION-ONLY read of the settlement state — it never blocks,
+        reverses, or re-dispatches a payment. Used to confirm that money
+        recovered actually settled.
+        """
+        if self.settings.act_mode == "stub":
+            return {"settlement_id": settlement_id, "status": "settled",
+                    "actor": "stub"}
+        self._require_live()
+        if not self.settings.razorpay_settlement_path:
+            raise RuntimeError(
+                "ACT_MODE=live settlement reconciliation requires "
+                "RAZORPAY_SETTLEMENT_PATH set to Razorpay's Settlement endpoint. "
+                "Refusing to guess the API shape."
+            )
+        url = (f"{self.settings.razorpay_base_url.rstrip('/')}"
+               f"{self.settings.razorpay_settlement_path.format(settlement_id=settlement_id)}")
+        resp = httpx.get(url, auth=(self.settings.razorpay_key_id,
+                                    self.settings.razorpay_key_secret), timeout=15.0)
+        resp.raise_for_status()
+        return resp.json()
+
     def retry_payment(
         self,
         *,

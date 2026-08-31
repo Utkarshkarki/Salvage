@@ -2,7 +2,7 @@
 
 > Read this file first at the start of every session before doing anything else.
 
-**Status:** Pipeline complete. All 10 core deliverables implemented. **Phase 2 in progress (Track 3 deepening):** B1 (Rule Sensitivity Simulator), B2 (Manual override actions) and B3 (Customer status page) are implemented and tested; paused at the external-dependency checkpoint before A1/A2/A3 (needs the real Razorpay webhook secret + test keys). Tests green: **81 collected across 9 files** (68 core + 13 Phase 2 so far), all passing.
+**Status:** Pipeline complete. Phase 1 core + Phase 2 deepening done. **Phase 3 (competitive hardening) COMPLETE:** adversarial resilience suite, WAL mode, economic-floor rule R7, stale-lock sweep (Celery periodic), policy-as-code rules + `/rules` page, LLM provenance logging, verification-only Subscriptions/Settlements integration, distributed-idempotency design note, and all submission artifacts. Tests green: **99 collected across 12 files**, all passing. (A1 ngrok/webhook registration still needs the operator's real Razorpay secret — live paths are env-gated and documented.)
 
 ## What's done
 
@@ -77,12 +77,63 @@ everything stays server-rendered FastAPI/Jinja2/hand-built HTML.
 ## What's next / Phase 2 remaining
 
 - **A1** — ngrok + Razorpay Dashboard webhook registration + mode-switch docs/config (real secret
-  required from user).
-- **A2** — Subscriptions API verification of `mandate_revoked`, optional/env-gated, fault-isolated
-  (mock the API-failure path in tests).
-- **A3** — Settlements API reconciliation after `retry_now` recovery (+ `settlement_confirmed`
-  field on the audit entry or a lightweight table), verification-only, never blocks/reverses,
-  Track 3 framing only.
-- Phase 2 tests for A2/A3 fault isolation (mock API failure).
+  required from user). STILL REQUIRES THE OPERATOR's real secret/test keys — never guessed.
+- **A2** — ~~Subscriptions API verification of `mandate_revoked`~~ **DONE in Phase 3**:
+  `razorpay_client.subscription_status` + `verify.verify_subscription_status`, verification-only,
+  fault-isolated, env-gated (`RAZORPAY_SUBSCRIPTION_PATH`, ZERO-HALO default empty).
+- **A3** — ~~Settlements API reconciliation after `retry_now` recovery~~ **DONE in Phase 3**:
+  `razorpay_client.settlement_reconciliation` + `verify.verify_settlement_reconciliation`,
+  verification-only (never blocks/reverses), Track 3 framing only (not RazorpayX treasury ops).
 - Run `python -m reclaim.batch` with `RECLAIM_FRESH=1` to regenerate demo metrics; start the API
-  (`uvicorn reclaim.api:app`) and open `/dashboard`, `/simulator`, `/status/{case_id}`.
+  (`uvicorn reclaim.api:app`) and open `/dashboard`, `/simulator`, `/status/{case_id}`, `/rules`.
+
+---
+
+## Phase 3 — Competitive hardening (this build)
+
+Follows the Phase 3 prompt. Worked in the mandated build order; asked where the guardrail
+required it (the policy-as-code refactor touches tested R1–R6 — flagged, behavior preserved,
+verified by the full suite). **Test count: 81 → 99, all passing.**
+
+17. **Section 1 — Adversarial resilience tests** (`tests/adversarial/`, 10 tests):
+    - `test_concurrent_duplicate_webhooks` — same event_id fired from 8 threads => exactly one
+      ingest (event-id UNIQUE) + exactly one execution (ExecutedActionRow ledger).
+    - `test_sweep_*` — mid-pipeline crash recovery: new `reclaim/sweep.py` finds `ACTING` cases
+      past `STALE_LOCK_TIMEOUT_SECONDS` and reconciles them to `ESCALATED`; never touches
+      in-progress ones.
+    - `test_network_drop_idempotency_intercepted` — a retry that may have succeeded server-side
+      is intercepted on retry by the same idempotency key; no double-execute.
+    - `test_injection_marker_triaged_before_llm` / `test_malformed_control_chars_triaged` —
+      adversarial Diagnose-input triage short-circuits before the model; deterministic fallback
+      governs; deliberately NOT counted as an LLM failure.
+    - `test_concurrent_read_write_does_not_corrupt` / `test_concurrent_pipeline_is_idempotent_via_ledger`.
+18. **Section 2.1 — WAL mode** — `db.build_engine` enables `journal_mode=WAL`,
+    `synchronous=NORMAL`, + busy timeout on file-backed SQLite; in-memory skipped. No test regressions.
+19. **Section 2.2 — Economic floor rule (R7)** — amount below `MIN_RECOVERY_AMOUNT` (₹100,
+    env-configurable) => `STOP` (never auto-retry). Added to the declarative registry at priority 2
+    (below R1 mandate-safety). Tests include precedence (R1 wins) + threshold-configurability.
+20. **Section 2.3 — Stale-lock sweep as a Celery periodic task** — beat schedule entry
+    `reclaim-sweep-stale-acting` every 5 min → `reclaim.tasks.sweep_stale_acting_task`; test
+    verifies the schedule + task name.
+21. **Section 2.4 — Distributed idempotency design note** — README § "Distributed idempotency":
+    contract to preserve (claim-before-dispatch, win-once, TTL-bounded), NOT implemented.
+22. **Section 3.1 — Metrics differentiation documented** — README "why this matters" paragraph.
+23. **Section 3.2/3.4/3.5 — Simulator, consumer page, override controls** — CONFIRMED done in Phase 2.
+24. **Section 3.3 — Real Razorpay integration depth** — added `subscription_status` +
+    `settlement_reconciliation` (verification-only, fault-isolated, env-gated paths) + `verify.py`.
+    The Payments retry path was already wired (stub/live + idempotency key).
+25. **Section 3.6 — Policy-as-code stopping rules** — R1–R7 as a declarative `RuleSpec` registry
+    (id, priority, plain-language description, pure condition, forced action); new `GET /rules`
+    page renders live policy. **FLAG:** this refactored the tested R1–R6 `enforce()` into a
+    data-driven form; behavior preserved (first-match-wins, priority order) and verified by the
+    full suite. Additive R7 included from the start.
+26. **Section 3.7 — LLM provenance logging** — `input_state.llm_provenance` (model, `*-v1` prompt
+    version, prompt content hash, mode) on every Diagnose/Decide audit entry; README note.
+27. **Section 4 — Submission artifacts** — `DECISIONS.md`, `CHANGELOG_SUBMISSION.md`, `tasks.md`,
+    README "Failure Injection & Resilience" (1.5), trust-boundary diagram (4.4),
+    "What Broke and How We Fixed It" (4.3), expanded API surface. **PROGRESS.md** updated.
+
+### Guardrail note (asked before touching)
+The policy-as-code refactor (3.6) rewrote `stopping_rules.enforce()` which the Phase 2 tests
+cover (R1–R6). This was the single change to already-tested core logic; it was done as a
+behavior-preserving, data-driven rewrite (full suite green, 99/99) rather than an inline reorder.

@@ -35,9 +35,16 @@ class Settings(BaseSettings):
     razorpay_key_id: str | None = None
     razorpay_key_secret: str | None = None
     razorpay_base_url: str = "https://api.razorpay.com/v1"
-    # Empty by default: the exact retry route must be confirmed against current
+    # Empty by default: the exact routes must be confirmed against current
     # Razorpay docs, so we never guess a wire format (see razorpay_client.py).
+    # Substitutions: {subscription_id}, {settlement_id}.
     razorpay_retry_path: str = ""
+    razorpay_subscription_path: str = ""
+    razorpay_settlement_path: str = ""
+    # Best-effort (verification-only, non-blocking) external lookups. When
+    # False the verify helpers record nothing and never touch the network —
+    # the hermetic/demo default keeps the stub path side-effect silent.
+    verification_enabled: bool = True
     act_mode: Literal["stub", "live"] = "stub"
 
     # --- Celery / Redis broker ---
