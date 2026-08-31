@@ -55,6 +55,15 @@ class Settings(BaseSettings):
     max_retries_per_cycle: int = 3
     cooldown_hours: float = 24.0
     email_cap_per_7d: int = 1
+    # Economic floor: cases below this amount are never auto-retried — the
+    # retry cost/risk outweighs the recovery value for trivially small amounts.
+    # (Stopping rule R7; env-configurable as MIN_RECOVERY_AMOUNT.)
+    min_recovery_amount: float = 100.0
+
+    # --- Stale-lock reconciliation ---
+    # A case stuck in ACTING longer than this (seconds) is considered aborted
+    # mid-pipeline and is swept to ESCALATED by the reconciliation task.
+    stale_lock_timeout_seconds: float = 300.0
 
     # --- Concurrency throttle ---
     max_concurrency: int = 5

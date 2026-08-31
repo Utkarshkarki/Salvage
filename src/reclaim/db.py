@@ -20,6 +20,7 @@ from sqlalchemy import (
     String,
     UniqueConstraint,
     create_engine,
+    event,
 )
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
@@ -90,14 +91,37 @@ class ExecutedActionRow(Base):
     executed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
+def _set_sqlite_wal(dbapi_connection: Any, connection_record: Any) -> None:
+    """Enable WAL journaling + a sane busy timeout on a file-backed SQLite DB.
+
+    WAL gives better concurrent-reader/writer behaviour (readers never block
+    writers and vice-versa), and ``synchronous=NORMAL`` is the standard WAL
+    durability/speed tradeoff. Busy timeouts make simultaneous writers wait for
+    the write lock instead of erroring, which the concurrent-dedupe tests rely
+    on. In-memory SQLite cannot use WAL, so this is only attached to file URLs.
+    """
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL").fetchone()
+    cursor.execute("PRAGMA synchronous=NORMAL")
+    cursor.execute("PRAGMA busy_timeout=30000")
+    cursor.close()
+
+
 def build_engine(database_url: str) -> Engine:
     # check_same_thread=False so a session can be shared between FastAPI
     # threads / Celery workers in dev; not needed under Postgres.
-    return create_engine(
-        database_url,
-        connect_args={"check_same_thread": False} if database_url.startswith("sqlite") else {},
-        pool_pre_ping=True,
-    )
+    if database_url.startswith("sqlite"):
+        is_memory = database_url.startswith("sqlite:///:memory:")
+        connect_args: dict[str, Any] = {"check_same_thread": False}
+        if not is_memory:
+            # Busy timeout so concurrent writers block on the lock instead of
+            # raising "database is locked"; only valid for file-backed SQLite.
+            connect_args["timeout"] = 30
+        engine = create_engine(database_url, connect_args=connect_args, pool_pre_ping=True)
+        if not is_memory:
+            event.listen(engine, "connect", _set_sqlite_wal)
+        return engine
+    return create_engine(database_url, pool_pre_ping=True)
 
 
 def init_schema(engine: Engine) -> None:

@@ -347,6 +347,53 @@ def metrics() -> JSONResponse:
 
 
 # ---------------------------------------------------------------------------
+# 3.6 Policy-as-code: /rules — the active stopping rules in plain language
+# ---------------------------------------------------------------------------
+# The stopping rules are a declarative registry (see stopping_rules.py), so the
+# policy itself is an auditable, introspectable artifact. This page renders what
+# IS currently enforced (id, priority, forced action, plain-English statement
+# with the live threshold values) — not just the outputs of the rules.
+
+
+def _RULES_PAGE(settings: Settings, rules: list[dict[str, object]]) -> str:
+    rows = "".join(
+        f'<tr><td class="rid">{html.escape(str(r["rule_id"]))}</td>'
+        f'<td class="prio">{r["priority"]}</td>'
+        f'<td class="act">{html.escape(str(r["action"]))}</td>'
+        f'<td class="desc">{html.escape(str(r["description"]))}</td></tr>'
+        for r in rules
+    )
+    return f"""<!doctype html>
+<html><head><meta charset="utf-8"><title>Reclaim — Active stopping rules</title>
+<style>{_DASH_CSS} .rules{{width:100%;border-collapse:collapse}}
+.rules th,.rules td{{text-align:left;padding:8px 12px;border-bottom:1px solid #e2e8f0;font-size:13px}}
+.rules th{{color:#475569;font-size:12px;text-transform:uppercase;letter-spacing:.04em}}
+.rid{{font-weight:700;color:#7c3aed}}
+.prio{{color:#64748b;text-align:center}}
+.act{{font-weight:600}}
+</style></head><body>
+<h1>Reclaim — Active stopping rules (policy-as-code)</h1>
+<p class="sub">These rules are enforced in code over every LLM proposal. They are
+expressed declaratively and rendered here in plain language so the policy itself
+is an auditable artifact. A rule INSERT (first matching rule wins) overrides the
+LLM's proposal.</p>
+<p class="back"><a href="/dashboard">&larr; back to dashboard</a></p>
+<div class="card"><table class="rules"><thead><tr>
+<th>Rule</th><th>Priority</th><th>Forced action</th><th>Policy (live values)</th>
+</tr></thead><tbody>{rows}</tbody></table></div>
+</body></html>"""
+
+
+@app.get("/rules", response_class=HTMLResponse)
+def rules_page() -> HTMLResponse:
+    """Render the active policy as plain language (auditable rules artifact)."""
+    from .stopping_rules import describe_rules
+
+    settings = get_settings_dep()
+    return HTMLResponse(_RULES_PAGE(settings, describe_rules(settings)))
+
+
+# ---------------------------------------------------------------------------
 # B1: Rule Sensitivity Simulator — /simulator
 # ---------------------------------------------------------------------------
 # Lets an operator re-run the SAME seeded synthetic batch (seed=42) under a

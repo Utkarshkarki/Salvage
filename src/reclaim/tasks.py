@@ -27,6 +27,25 @@ def run_case_task(case_id: str) -> dict[str, Any]:
     }
 
 
+@app.task(name="reclaim.tasks.sweep_stale_acting_task")
+def sweep_stale_acting_task() -> dict[str, Any]:
+    """Periodic reconciliation: sweep stale ACTING cases to ESCALATED.
+
+    Invoked by the Celery beat schedule every 5 minutes. Finds cases stuck in
+    ACTING past the configurable timeout (a process died mid-pipeline) and
+    safely moves them to human review. Idempotent: re-running is a no-op once
+    they have been swept.
+    """
+    from .config import get_settings
+    from .db import get_db
+    from .sweep import reconcile_stale_acting
+
+    settings = get_settings()
+    db = get_db()
+    swept = reconcile_stale_acting(db, settings)
+    return {"swept_cases": swept, "count": len(swept)}
+
+
 @app.task(name="reclaim.tasks.retry_payment_task")
 def retry_payment_task(case_id: str, attempt_number: int) -> dict[str, Any]:
     """Execute a deferred retry for a case that was scheduled (broker mode).

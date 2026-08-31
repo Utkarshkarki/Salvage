@@ -12,8 +12,10 @@ This is the ONLY way LLM failures are handled — no silent guesses.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import re
 from datetime import UTC, datetime, timedelta
 from typing import Generic, TypeVar
 
@@ -33,6 +35,92 @@ from .models import (
 logger = logging.getLogger("reclaim.llm_client")
 
 T = TypeVar("T", bound=BaseModel)
+
+# ---------------------------------------------------------------------------
+# Provenance + adversarial-input triage
+# ---------------------------------------------------------------------------
+# The ``decline_code`` field is free text that flows into the Diagnose prompt.
+# A hostile/malformed value must NEVER steer the diagnosis, so we triage it
+# BEFORE the LLM is consulted and short-circuit to a deterministic fallback
+# when it looks adversarial. ``prompt_version`` + ``prompt_hash`` give each
+# Diagnose/Decide call a reproducible identity for drift detection/audits.
+
+# Markers that strongly suggest prompt-injection / instruction overrides.
+_INJECTION_MARKERS = (
+    "ignore previous",
+    "ignore all",
+    "ignore the above",
+    "system prompt",
+    "system:",
+    "you are now",
+    "your instructions",
+    "role: system",
+    "role:user",
+    "<|im_start",
+    "<|im_end",
+    "### instruction",
+    "### human",
+    "forget everything",
+    "act as",
+    "do not follow",
+    "disregard",
+)
+
+# A real bank decline code is short (R01, 54, Z06...). Anything pathological is
+# treated as untrusted noise rather than rerouted into the model.
+_MAX_DECLINE_CODE_LEN = 40
+
+_CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+_JSON_STRUCT_RE = re.compile(r"[{}\[\]\":\\]")
+
+
+class TriageResult:
+    """Outcome of triaging a Diagnose input for adversarial content."""
+
+    def __init__(self, triaged: bool, reason: str = "") -> None:
+        self.triaged = triaged
+        self.reason = reason
+
+
+def triage_diagnose_input(input_: DiagnoseInput) -> TriageResult:
+    """Detect malformed / injection-attempting input on the unknown-text path.
+
+    Returns ``triaged=True`` with a reason when the decline code must not reach
+    the model. Plain bank codes (and empty-free-text edge cases) pass through.
+    """
+    code = input_.decline_code or ""
+    low = code.lower()
+
+    if _CONTROL_CHAR_RE.search(code):
+        return TriageResult(True, "decline_code contains control characters")
+    # Injection markers rank above "too long" — a hostile string that is ALSO
+    # long is still first and foremost an injection attempt.
+    if any(m in low for m in _INJECTION_MARKERS):
+        return TriageResult(True, "decline_code contains prompt-injection markers")
+    if _JSON_STRUCT_RE.search(code):
+        # A structured/templated string masquerading as a decline code.
+        return TriageResult(True, "decline_code contains structured/JSON characters")
+    if len(code) > _MAX_DECLINE_CODE_LEN:
+        return TriageResult(
+            True, f"decline_code too long ({len(code)} > {_MAX_DECLINE_CODE_LEN} chars)"
+        )
+    return TriageResult(False)
+
+
+def _provenance(settings: Settings, kind: str, content_hash_source: str) -> dict[str, str]:
+    """Deterministic provenance identity for one Diagnose/Decide call.
+
+    ``content_hash_source`` is the serialized prompt/input the call consumes.
+    """
+    digest = hashlib.sha256(
+        (f"{settings.ollama_model}|{kind}|{content_hash_source}").encode("utf-8")
+    ).hexdigest()
+    return {
+        "model": settings.ollama_model,
+        "prompt_version": f"{kind}-v1",
+        "prompt_hash": digest,
+        "mode": settings.llm_mode,
+    }
 
 # ---------------------------------------------------------------------------
 # Offline deterministic shim (hermetic, no network, stable for tests/demo)
@@ -238,22 +326,49 @@ class LLMClient:
 class FallbackResult(Generic[T]):
     output: T
     fallback_triggered: bool
+    provenance: dict[str, str] | None
 
-    def __init__(self, output: T, fallback_triggered: bool) -> None:
+    def __init__(
+        self,
+        output: T,
+        fallback_triggered: bool,
+        provenance: dict[str, str] | None = None,
+    ) -> None:
         self.output = output
         self.fallback_triggered = fallback_triggered
+        self.provenance = provenance
 
 
 class LLMWrapper:
-    """Convenience wrapper exposing diagnose/decide with fallback built in."""
+    """Convenience wrapper exposing diagnose/decide with fallback + triage built in."""
 
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
         self.client = LLMClient(settings)
 
     def diagnose(self, input_: DiagnoseInput) -> FallbackResult[DiagnoseOutput]:
+        # Adversarial-input guard: malformed / injection-attempting decline
+        # codes are triaged BEFORE the LLM is consulted. The model never sees
+        # the hostile string, so its "response" (had one happened) can never
+        # influence the result — the deterministic fallback governs.
+        triage = triage_diagnose_input(input_)
+        source = input_.model_dump_json()
+        prov = _provenance(self.settings, "diagnose", source)
+        if triage.triaged:
+            logger.warning("DIAGNOSE_TRIAGED reason=%s", triage.reason)
+            fallback = DiagnoseOutput(
+                cause=Cause.UNKNOWN,
+                confidence=0.0,
+                reasoning=f"adversarial/malformed decline_code triaged: "
+                          f"{triage.reason}; LLM not consulted",
+            )
+            return FallbackResult(
+                fallback, fallback_triggered=False, provenance=prov
+            )
         try:
-            return FallbackResult(self.client.diagnose(input_), fallback_triggered=False)
+            return FallbackResult(
+                self.client.diagnose(input_), fallback_triggered=False, provenance=prov
+            )
         except Exception as exc:  # timeout, validation after retry, etc.
             logger.error("Diagnose fallback triggered: %s", exc)
             fallback = DiagnoseOutput(
@@ -261,7 +376,7 @@ class LLMWrapper:
                 confidence=0.0,
                 reasoning=f"fallback: {type(exc).__name__}",
             )
-            return FallbackResult(fallback, fallback_triggered=True)
+            return FallbackResult(fallback, fallback_triggered=True, provenance=prov)
 
     def decide(self, input_: DecideInput) -> FallbackResult[DecideOutput]:
         """Decide with the deterministic fallback: escalate_human.
@@ -269,12 +384,15 @@ class LLMWrapper:
         Per the spec, if the LLM still fails after the retry-once-with-error
         path, Reclaim deterministically falls back to escalate_human rather
         than guessing at any money-moving action."""
+        prov = _provenance(self.settings, "decide", input_.model_dump_json())
         try:
-            return FallbackResult(self.client.decide(input_), fallback_triggered=False)
+            return FallbackResult(
+                self.client.decide(input_), fallback_triggered=False, provenance=prov
+            )
         except Exception as exc:  # timeout, validation after retry, etc.
             logger.error("Decide fallback triggered: %s", exc)
             fallback = DecideOutput(
                 action=Action.ESCALATE_HUMAN,
                 reasoning=f"fallback: {type(exc).__name__} - escalate human",
             )
-            return FallbackResult(fallback, fallback_triggered=True)
+            return FallbackResult(fallback, fallback_triggered=True, provenance=prov)

@@ -12,6 +12,7 @@ from typing import Any
 
 from celery import Celery
 from celery.app.base import Celery as CeleryApp
+from celery.schedules import crontab
 
 from .config import Settings, get_settings
 
@@ -35,6 +36,15 @@ def build_app(settings: Settings | None = None) -> CeleryApp:
         task_eager_propagates=True,
         task_acks_late=True,
         worker_prefetch_multiplier=1,
+        # Periodic reconciliation: the stale-lock sweep runs every 5 minutes so
+        # a case stuck in ACTING is recovered to human review even if the worker
+        # that owned it died mid-pipeline. (The task itself is idempotent.)
+        beat_schedule={
+            "reclaim-sweep-stale-acting": {
+                "task": "reclaim.tasks.sweep_stale_acting_task",
+                "schedule": crontab(minute="*/5"),
+            },
+        },
         # Upstash + Celery TLS: explicit ssl dicts (CERT_NONE via None) cover
         # the rediss:// scheme. Confirm against current Upstash/Celery docs
         # when you run a real worker.

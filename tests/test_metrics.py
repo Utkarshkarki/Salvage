@@ -139,8 +139,10 @@ def test_recovered_retry_counts_as_stub_action(settings, db: Database) -> None:
     from reclaim.metrics import compute_metrics
     from reclaim.pipeline import run_case
 
+    # 20000 paise = Rs.200: above the R7 economic floor (100), below R2 (5000),
+    # with the cooldown elapsed -> a healthy retry_now -> recovered.
     case, is_new, _ = _ingest(
-        db, settings, _webhook_body(error_code="R01", days_ago=3, amount=5000), "evt_m4"
+        db, settings, _webhook_body(error_code="R01", days_ago=3, amount=20000), "evt_m4"
     )
     assert is_new
     out = run_case(case.case_id, settings=settings, db=db)

@@ -154,12 +154,18 @@ def run_case(
         payment_history=case.payment_history,
     )
     di = call_with_backoff(lambda: wrapper.diagnose(di_input), settings)
+    di_state = di_input.model_dump(mode="json")
+    if di.provenance:
+        # LLM call provenance (model, prompt version, prompt hash) — lets an
+        # audit reader reproduce exactly what model/prompt produced this
+        # diagnosis (Section 3.7 provenance logging).
+        di_state = {**di_state, "llm_provenance": di.provenance}
     write_audit(
         db,
         AuditLogEntry(
             case_id=case_id, stage="diagnose",
             agent_reasoning=di.output.reasoning,
-            input_state=di_input.model_dump(mode="json"),
+            input_state=di_state,
             decision=f"cause={di.output.cause.value} conf={di.output.confidence}",
             action_taken=None, outcome="DIAGNOSED",
             fallback_triggered=di.fallback_triggered,
@@ -187,6 +193,9 @@ def run_case(
     # customer-facing status page (/status/{case_id}) can render "we'll retry
     # on <date>" from the SAME persisted data the merchant dashboard reads.
     decide_input_state = de_input.model_dump(mode="json")
+    if de.provenance:
+        # LLM call provenance for the Decide step (Section 3.7).
+        decide_input_state = {**decide_input_state, "llm_provenance": de.provenance}
     if rule.decision.scheduled_at is not None:
         decide_input_state = {
             **decide_input_state,
