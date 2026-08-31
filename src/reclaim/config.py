@@ -72,6 +72,13 @@ class Settings(BaseSettings):
     # mid-pipeline and is swept to ESCALATED by the reconciliation task.
     stale_lock_timeout_seconds: float = 300.0
 
+    # --- Frontend CORS ---
+    # Comma-separated origins allowed by the API for the React SPA. The default
+    # is the Vite dev server ONLY. This is a LOCAL-DEMO default: for any real
+    # deployment narrow it to the deployed frontend origin(s), ideally serving
+    # the SPA and API from the same origin so CORS is unnecessary entirely.
+    cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
+
     # --- Concurrency throttle ---
     max_concurrency: int = 5
     llm_backoff_base_seconds: float = 1.0

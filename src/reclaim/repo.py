@@ -33,6 +33,28 @@ def all_case_rows(db: Database) -> list[RecoveryCaseRow]:
         return list(session.query(RecoveryCaseRow).order_by(RecoveryCaseRow.id).all())
 
 
+def list_cases(
+    db: Database,
+    *,
+    state: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[RecoveryCaseRow]:
+    """Query-layer filtered + paginated case listing (for the /api/v1/cases route).
+
+    Returns up to ``limit`` case rows starting at ``offset``, optionally
+    filtered by an exact ``state``. All filtering/pagination happens in SQL —
+    not by slicing the full result set in Python — so the endpoint stays bounded
+    as the dataset grows. Rows are ordered by id (ingest order), which keeps
+    pagination stable across pages.
+    """
+    with db.create_session() as session:
+        query = session.query(RecoveryCaseRow).order_by(RecoveryCaseRow.id)
+        if state is not None:
+            query = query.filter(RecoveryCaseRow.state == state)
+        return list(query.offset(offset).limit(limit).all())
+
+
 def set_case_state(db: Database, case_id: str, state: CaseState) -> None:
     """Persist the authoritative state machine position for a case."""
     with db.create_session() as session:

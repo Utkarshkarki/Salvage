@@ -1,0 +1,19 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Base typography + sensible defaults. The color tokens live in
+   tailwind.config.ts (design tokens) — nothing is hardcoded here. */
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+  body {
+    font-family:
+      "Segoe UI",
+      system-ui,
+      -apple-system,
+      sans-serif;
+    @apply bg-canvas text-ink antialiased;
+  }
+}

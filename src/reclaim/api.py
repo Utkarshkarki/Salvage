@@ -12,15 +12,21 @@ from __future__ import annotations
 
 import html
 import logging
-import os
-import tempfile
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Header, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from . import repo
+from .api_views import (
+    _CAUSE_PLAIN,  # noqa: F401  (re-exported so existing imports resolve)
+    _SIM_THRESHOLD_FIELDS,
+    _run_simulated_batch,
+    _sim_metric_key,
+    customer_view as _customer_view,
+)
 from .config import Settings, get_settings
 from .db import Database, get_db, init_schema, RecoveryCaseRow
 from .models import AuditLogEntry, CaseState
@@ -56,6 +62,36 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="Reclaim — AI Revenue Recovery", lifespan=lifespan)
+
+# CORS for the Phase 4 React SPA.
+#
+# ⚠️  WARNING — LOCAL DEMO CONFIG, NOT DEPLOYMENT-SAFE AS-IS:
+# The origin list below (the Vite dev server) is explicitly NOT a wildcard, and
+# it must remain that way. A wildcard ("*") would let ANY origin read/write the
+# API from a browser. For any real deployment behind a reverse proxy the frontend
+# origin(s) must be narrowed to exactly the deployed site (and ideally the API and
+# SPA are served from the same origin so CORS is unnecessary entirely). Override
+# RECLAIM_CORS_ORIGINS (comma-separated) via env for anything beyond this dev
+# default. "allow_credentials=True" is only meaningful together with explicit,
+# non-wildcard origins.
+_cors_origins = [
+    o.strip()
+    for o in get_settings().cors_origins.split(",")
+    if o.strip()
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Mount the Phase 4 JSON API namespace (/api/v1/*). It is a parallel surface to
+# the HTML routes — thin wrappers over the same tested business logic.
+from .api_v1 import router as api_v1_router
+
+app.include_router(api_v1_router)
 
 
 @app.get("/health")
@@ -247,62 +283,8 @@ def resolve_human_endpoint(case_id: str) -> Response:
 # it on a non-guessable, per-case share token. Kept as case_id for consistency
 # with the merchant dashboard and to avoid a schema migration in this phase.
 
-_CAUSE_PLAIN: dict[str, str] = {
-    "insufficient_funds": "Your payment was declined because the account had insufficient funds.",
-    "card_expired": "The card we had on file has expired, so it could not be used.",
-    "bank_timeout": "Your bank did not respond in time to the payment request.",
-    "do_not_honor": "Your bank declined the payment.",
-    "mandate_revoked": "The standing authorization (mandate) for this subscription was revoked.",
-    "unknown": "We could not pinpoint the exact reason for the payment failure.",
-}
-
-
-def _customer_view(row: RecoveryCaseRow, trail: list[AuditLogEntry]) -> dict[str, str]:
-    """Build a plain-language snapshot from the audit trail (customer-safe)."""
-    # What happened (cause from the Diagnose decision: "cause=X conf=Y").
-    cause = "unknown"
-    for e in trail:
-        if e.stage == "diagnose" and e.decision.startswith("cause="):
-            cause = e.decision.split("cause=")[1].split()[0]
-            break
-    reason = _CAUSE_PLAIN.get(cause, _CAUSE_PLAIN["unknown"])
-
-    # What happens next (next action + any scheduled retry date).
-    scheduled_at: str | None = None
-    last_action = ""
-    recovered = False
-    stopped = False
-    for e in trail:
-        if isinstance(e.input_state, dict) and e.input_state.get("scheduled_at"):
-            scheduled_at = str(e.input_state["scheduled_at"])
-        if e.stage == "act" and e.action_taken:
-            last_action = e.action_taken or last_action
-        if e.stage == "act" and e.outcome and "retry_succeeded" in e.outcome:
-            recovered = True
-        if e.stage == "act" and e.action_taken == "stop":
-            stopped = True
-
-    state = row.state
-    # Heading + next-step, plain language only.
-    if state == CaseState.ESCALATED.value:
-        heading = "Under review by our team"
-        next_step = "Our team is looking into this and will reach out if we need anything from you."
-    elif recovered:
-        heading = "Resolved"
-        next_step = "Your payment has been successfully processed. Thank you."
-    elif stopped:
-        heading = "Closed"
-        next_step = "No further automatic payment attempts will be made for this charge."
-    elif state == CaseState.FAILED.value:
-        heading = "Payment unsuccessful"
-        next_step = "We were unable to complete this payment. Please check your payment method."
-    elif scheduled_at:
-        heading = "We're on it"
-        next_step = f"We'll automatically retry this payment on {scheduled_at.replace('T', ' ')[:16]} UTC."
-    else:
-        heading = "In progress"
-        next_step = "We're working to resolve this. No action is needed from you."
-    return {"heading": heading, "reason": reason, "next_step": next_step}
+# _CAUSE_PLAIN / _customer_view moved to api_views.py (shared with the JSON
+# API so the HTML and JSON status surfaces cannot drift). Imported above.
 
 
 @app.get("/status/{case_id}", response_class=HTMLResponse)
@@ -403,58 +385,10 @@ def rules_page() -> HTMLResponse:
 # are never mutated (overrides are passed through on a throwaway Settings copy
 # pointed at a throwaway DB).
 
-# Editable rule thresholds (subset of config.py that the simulator exposes).
-_SIM_THRESHOLD_FIELDS = (
-    "escalation_amount_threshold",
-    "escalation_days_threshold",
-    "max_retries_per_cycle",
-    "cooldown_hours",
-    "email_cap_per_7d",
-)
-
-
-def _run_simulated_batch(settings: Settings, overrides: dict[str, object]) -> dict[str, object]:
-    """Run the seed-42 synthetic batch on a throwaway DB with ``overrides``.
-
-    Returns the same shape as :func:`reclaim.metrics.compute_metrics`. Uses a
-    temp-file SQLite DB (a shared in-memory engine cannot be read across the
-    thread pool run_batch uses) and tears it down afterwards.
-    """
-    from .pipeline import run_batch
-    from .metrics import compute_metrics
-    from .synthetic import generate_batch
-    from .batch import ingest_batch
-
-    with tempfile.TemporaryDirectory() as td:
-        url = f"sqlite:///{os.path.join(td, 'sim.db')}"
-        sim_settings = settings.model_copy(update={"database_url": url, **overrides})
-        db = Database(sim_settings)
-        init_schema(db.engine)
-        batch = generate_batch(seed=42, webhook_secret=settings.razorpay_webhook_secret)
-        new_ids, _dupes, _rej = ingest_batch(db, batch, sim_settings)
-        run_batch(new_ids, settings=sim_settings, db=db)
-        metrics = compute_metrics(db, sim_settings)
-        db.close()
-        return metrics
-
-
-def _sim_metric_key(metrics: dict[str, object]) -> list[tuple[str, str]]:
-    """Human labels for the comparison rows, read straight from compute_metrics."""
-    def _pct(v: object) -> str:
-        return f"{float(v) * 100:.1f}%"
-
-    esc = int(metrics.get("escalated_cases", 0))
-    stopped = int(metrics.get("stopped_cases", 0))
-    return [
-        ("Total cases", str(metrics.get("total_cases", 0))),
-        ("Recovery rate", _pct(metrics.get("recovery_rate", 0.0))),
-        ("Amount recovered (INR)", f"{float(metrics.get('recovered_amount', 0.0)):,.2f}"),
-        ("Escalated (human)", str(esc)),
-        ("Stopped (deliberate halt)", str(stopped)),
-        ("LLM call failures", str(metrics.get("llm_call_failures", 0))),
-        ("Stopping-rule overrides", str(metrics.get("stopping_rule_overrides", 0))),
-        ("Stub-mode actions", str(metrics.get("stub_mode_actions", 0))),
-    ]
+# _SIM_THRESHOLD_FIELDS / _run_simulated_batch / _sim_metric_key moved to
+# api_views.py (shared with the JSON API so both surfaces cannot drift). They
+# are re-imported at the top of this module so the /simulator HTML route and
+# tests/test_simulator.py keep working unchanged.
 
 
 @app.get("/simulator", response_class=HTMLResponse)
