@@ -95,7 +95,7 @@ Follows the Phase 3 prompt. Worked in the mandated build order; asked where the 
 required it (the policy-as-code refactor touches tested R1–R6 — flagged, behavior preserved,
 verified by the full suite). **Test count: 81 → 99, all passing.**
 
-17. **Section 1 — Adversarial resilience tests** (`tests/adversarial/`, 10 tests):
+17. **Section 1 — Adversarial resilience tests** (`tests/adversarial/`, 11 tests):
     - `test_concurrent_duplicate_webhooks` — same event_id fired from 8 threads => exactly one
       ingest (event-id UNIQUE) + exactly one execution (ExecutedActionRow ledger).
     - `test_sweep_*` — mid-pipeline crash recovery: new `reclaim/sweep.py` finds `ACTING` cases
