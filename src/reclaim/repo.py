@@ -84,6 +84,7 @@ def audit_trail(db: Database, case_id: str) -> list[AuditLogEntry]:
             action_taken=r.action_taken,
             outcome=r.outcome,
             fallback_triggered=r.fallback_triggered,
+            rule_override=r.rule_override,
             timestamp=r.timestamp,
         )
         for r in rows

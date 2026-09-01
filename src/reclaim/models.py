@@ -177,8 +177,15 @@ class DecideOutput(BaseModel):
 class AuditLogEntry(BaseModel):
     """One immutable row in the append-only audit trail.
 
-    ``fallback_triggered`` records whether this stage hit a deterministic
-    fallback instead of a clean LLM output — the demo highlights this.
+    ``fallback_triggered`` is True only when the LLM call itself failed
+    (timeout, invalid output, etc.) and a deterministic default was used in
+    its place. It is NOT set for stopping-rule overrides.
+
+    ``rule_override`` is True when a valid LLM proposal was accepted but then
+    overridden by a deterministic safety rule (R1–R7). These two signals are
+    independent: a rule override on a clean LLM call has
+    ``fallback_triggered=False, rule_override=True``; an LLM failure that
+    also triggers a rule has ``fallback_triggered=True, rule_override=True``.
     """
 
     model_config = ConfigDict(from_attributes=True)
@@ -190,7 +197,8 @@ class AuditLogEntry(BaseModel):
     decision: str = ""
     action_taken: str | None = None
     outcome: str = ""
-    fallback_triggered: bool = False
+    fallback_triggered: bool = False  # LLM call itself failed; deterministic default used
+    rule_override: bool = False       # a deterministic rule (R1–R7) overrode a valid LLM proposal
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 

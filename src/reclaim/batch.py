@@ -159,7 +159,7 @@ def _print_report(metrics: dict[str, object], db: Database, new_ids: list[str]) 
         return
     print(f"EXAMPLE graceful case {chosen} (agent stopped/escalated instead of retrying):")
     for e in repo.audit_trail(db, chosen):
-        tag = " <-- LLM failure or stopping-rule override" if e.fallback_triggered else ""
+        tag = " <-- LLM call failed; deterministic fallback used" if e.fallback_triggered else ""
         print(f"  [{e.stage}] {e.decision} -> {e.outcome}{tag}")
         if e.agent_reasoning:
             print(f"        reasoning: {e.agent_reasoning}")

@@ -212,6 +212,7 @@ def run_case(
             outcome=f"DECIDED rule={rule.rule or 'none'}"
                     f"{' OVERRIDE' if rule.overridden else ''}",
             fallback_triggered=de.fallback_triggered,  # LLM failure only, not rule override
+            rule_override=rule.overridden,
         ),
     )
 

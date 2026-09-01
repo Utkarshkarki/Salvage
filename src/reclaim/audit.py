@@ -1,9 +1,16 @@
 """Append-only audit-log writer.
 
 One immutable row per stage transition. Insert-only by contract: the writer
-submits a row and commits; it never updates or deletes. ``fallback_triggered``
-flags whether the stage hit a deterministic fallback (LLM failure OR a
-stopping-rule override) instead of a clean LLM output — the demo's key signal.
+submits a row and commits; it never updates or deletes.
+
+Two independent boolean flags on each row:
+- ``fallback_triggered`` — the LLM call itself failed (timeout, invalid JSON,
+  etc.) and a deterministic default action was used in its place.
+- ``rule_override`` — a valid LLM proposal was accepted, then a deterministic
+  safety rule (R1–R7) overrode it in code.
+
+These are NOT the same thing and must NOT be conflated. A clean LLM call that
+gets overridden by R1 has ``fallback_triggered=False, rule_override=True``.
 
 Hash-chained for tamper detection (Phase 5). IMPORTANT design note: chain
 linkage is NOT computed at write time. Computing it would require reading "the
@@ -52,6 +59,7 @@ def write_audit(db: Database, entry: AuditLogEntry) -> None:
                 action_taken=entry.action_taken,
                 outcome=entry.outcome,
                 fallback_triggered=entry.fallback_triggered,
+                rule_override=entry.rule_override,
                 timestamp=entry.timestamp,
                 # prev_hash / entry_hash use their column defaults ("").
             )

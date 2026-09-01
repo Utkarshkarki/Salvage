@@ -95,10 +95,10 @@ def compute_metrics(db: Database, settings: Settings) -> dict[str, object]:
                 if entry.stage in ("diagnose", "decide"):
                     had_llm_failure = True
 
-            # Rule override: detected from "OVERRIDE" in the outcome string
-            if entry.stage == "decide" and "OVERRIDE" in (entry.outcome or ""):
+            # Rule override: explicitly flagged by boolean
+            if entry.stage == "decide" and entry.rule_override:
                 had_rule_override = True
-                # Extract which rule fired (e.g., "rule=R1 OVERRIDE")
+                # Extract which rule fired from the outcome string for the breakdown
                 if "rule=" in (entry.outcome or ""):
                     rule_part = entry.outcome.split("rule=")[1].split()[0]
                     rule_override_by_rule[rule_part] += 1

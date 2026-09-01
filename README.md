@@ -8,7 +8,7 @@
 
 ![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.111%2B-009688?style=flat-square&logo=fastapi&logoColor=white)
-![Tests](https://img.shields.io/badge/Tests-99%20passing-22C55E?style=flat-square)
+![Tests](https://img.shields.io/badge/Tests-155%20passing-22C55E?style=flat-square)
 ![License](https://img.shields.io/badge/License-MIT-6366F1?style=flat-square)
 ![Code style](https://img.shields.io/badge/Code%20style-Ruff-FFA500?style=flat-square)
 ![Type checked](https://img.shields.io/badge/Type%20checked-mypy%20strict-1E40AF?style=flat-square)
@@ -197,7 +197,7 @@ Each of these is backed by more than a test name — see [What Broke and How We 
 | Async Jobs | **Celery** + **Redis / Upstash** (`rediss://` TLS), eager mode for tests/demos, periodic beat schedule |
 | LLM | OpenAI-compatible client → local **Ollama** (e.g. `qwen2.5:32b-instruct`); deterministic offline shim for hermetic tests |
 | Templating | Jinja2 (dashboard) |
-| Code Quality | pytest (**99 tests**), Ruff, mypy (strict) |
+| Code Quality | pytest (**149 backend tests across 18 files, 6 frontend across 2 files**), Ruff, mypy (strict) |
 
 ### Modes
 
@@ -239,7 +239,7 @@ uvicorn reclaim.api:app --reload
 # → http://127.0.0.1:8000/dashboard
 
 # 5. Run the test suite
-pytest                       # full suite (99 tests)
+pytest                       # full suite (149 backend tests across 18 files, 6 frontend across 2 files)
 pytest tests/adversarial/    # adversarial resilience subset only
 ```
 
@@ -331,7 +331,7 @@ Human-override actions are recorded as `stage=manual_override` in the audit trai
 ## Testing
 
 ```bash
-pytest                        # full suite — 99 tests
+pytest                        # full suite — 149 backend tests across 18 files, 6 frontend across 2 files
 pytest tests/adversarial/     # failure injection & resilience subset
 pytest -k "test_stopping"     # stopping rules only
 pytest -k "test_pipeline"     # end-to-end pipeline only

@@ -421,5 +421,34 @@ regression tests).
      reclaim 24 calls / ₹24,089 net; calls reduced 60.0% vs retry-everything;
    - `python -m reclaim.verify_audit_chain` (against the fresh DB) → **✓ Chain
      is valid (235 entries)**.
-
-<｜DSML｜parameter name="old_string_22">
+32. **`fallback_triggered` conflation deep-dive — SAFE, no second bug (2026-09-02)** —
+    Following the `rule_override` split-out (unlogged prior session, 150 tests), a
+    possible *second, deeper* instance of the same conflation was investigated:
+    does `fallback_triggered` get set `True` anywhere for a stopping-rule override
+    (LLM succeeded, R1–R7 overrode a valid proposal) — i.e. was it the original
+    signal `metrics.py`'s `"OVERRIDE"` string-hack was built on? **Finding: it is
+    already clean.** `fallback_triggered=True` is set in exactly two places, both
+    genuine LLM failures: `llm_client.py` (diagnose `except` at :379, decide
+    `except` at :398 → deterministic default). It reaches the audit log only via
+    `di.fallback_triggered`/`de.fallback_triggered` in `pipeline.py`; the decide
+    entry (:214–216) sets `fallback_triggered=de.fallback_triggered` and the
+    *independent* `rule_override=rule.overridden`, with an explicit code comment
+    "LLM failure only, not rule override". Every other writer sets it `False`
+    (`sweep.py:118`, `manual.py`, `verify.py`). **Docstrings already corrected** by
+    the same prior change — `audit.py` and `models.py` both describe the narrow
+    meaning and the disjoint `fallback_triggered=False, rule_override=True` case;
+    no stale "LLM failure OR stopping-rule override" text remains, so no docstring
+    change was needed. **No metric/test depended** on `fallback_triggered` being
+    true for overrides (`metrics.py` reads it narrowly, stage-gated) — narrowing
+    changes no value. **Additive change:** new regression test
+    `tests/test_metrics.py::test_audit_entry_disambiguates_llm_failure_from_rule_override`
+    that asserts the full disjoint pair **on the real decide audit entry** for both
+    cases (LLM-failure → `fallback_triggered=True, rule_override=False`; R1
+    override of a valid proposal → `fallback_triggered=False, rule_override=True`).
+    Verified live: **151 collected / 151 passed**; fresh DB (`rm reclaim.db*` +
+    `python -m reclaim.batch`) → `llm_call_failures` **0**, `stopping_rule_overrides`
+    **32** `{'R1': 12, 'R6': 4, 'R3': 5, 'R2': 6, 'R4': 5}`, 24 recovered /
+    ₹39,776 / 20.7%; `verify_audit_chain` → **✓ Chain is valid (235 entries)**.
+    Also fixed a stray malformed `<parameter ...>` fragment that had corrupted the
+    end of PROGRESS.md (leftover from a failed prior edit) — file now ends cleanly
+    on item #31.

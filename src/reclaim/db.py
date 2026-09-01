@@ -70,6 +70,7 @@ class AuditLogRow(Base):
     action_taken: Mapped[str | None] = mapped_column(String(255), nullable=True)
     outcome: Mapped[str] = mapped_column(String(255), default="")
     fallback_triggered: Mapped[bool] = mapped_column(Boolean, default=False)
+    rule_override: Mapped[bool] = mapped_column(Boolean, default=False)
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     # Hash-chain columns (Phase 5)
     prev_hash: Mapped[str] = mapped_column(String(64), default="")  # Previous entry's hash

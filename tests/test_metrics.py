@@ -179,3 +179,85 @@ def test_escalated_because_r2_amount_is_override_and_stub_action(
     assert m["escalated_cases"] == 1
     assert m["stub_mode_actions"] == 1  # the escalate stub did fire
     assert m["cases_resolved_without_retry"] == 1
+
+
+def test_rule_override_boolean_flag_is_accurate(settings, db: Database) -> None:
+    """Regression test: the rule_override boolean is explicitly set on the audit
+    entry for a rule override, and NOT set for a normal LLM-driven decision."""
+    from reclaim.pipeline import run_case
+    from reclaim import repo
+
+    # 1. Normal LLM decision (amount below threshold, mandate intact, etc.)
+    # 200 rupees (20000 paise)
+    case1, is_new1, _ = _ingest(
+        db, settings, _webhook_body(error_code="R01", days_ago=3, amount=20000, sub="sub_bool_1"), "evt_bool_1"
+    )
+    assert is_new1
+    run_case(case1.case_id, settings=settings, db=db)
+    
+    trail1 = repo.audit_trail(db, case1.case_id)
+    decide_entry1 = next(e for e in trail1 if e.stage == "decide")
+    assert decide_entry1.rule_override is False
+
+    # 2. Rule override (mandate revoked -> R1)
+    case2, is_new2, _ = _ingest(
+        db, settings, _webhook_body(error_code="R0", sub="sub_bool_2"), "evt_bool_2"
+    )
+    assert is_new2
+    run_case(case2.case_id, settings=settings, db=db)
+
+    trail2 = repo.audit_trail(db, case2.case_id)
+    decide_entry2 = next(e for e in trail2 if e.stage == "decide")
+    assert decide_entry2.rule_override is True
+
+
+def test_audit_entry_disambiguates_llm_failure_from_rule_override(
+    settings, db: Database, monkeypatch
+) -> None:
+    """Regression test: the two booleans on the DECIDE audit entry are disjoint
+    and mean different things — ``fallback_triggered`` is True ONLY when the LLM
+    call itself failed, ``rule_override`` is True ONLY when a rule rejected a
+    *valid* LLM proposal. A rule override must never set ``fallback_triggered``.
+
+    Asserts the full pair on the real audit row for each case:
+      - genuine LLM failure:        fallback_triggered=True , rule_override=False
+      - valid proposal overridden:  fallback_triggered=False, rule_override=True
+    """
+    from reclaim import llm_client, repo
+    from reclaim.pipeline import run_case
+
+    # Case A: the decide LLM genuinely fails -> fallback used, no rule fired.
+    with monkeypatch.context() as m:
+        m.setattr(
+            llm_client.LLMClient,
+            "decide",
+            lambda self, i: (_ for _ in ()).throw(RuntimeError("ollama unreachable")),
+        )
+        case_a, is_new_a, _ = _ingest(
+            db, settings,
+            _webhook_body(error_code="R01", sub="sub_disc_a"), "evt_disc_a",
+        )
+        assert is_new_a
+        out_a = run_case(case_a.case_id, settings=settings, db=db)
+        assert out_a.llm_failure is True
+        assert out_a.stopping_rule_override is False
+        decide_a = next(
+            e for e in repo.audit_trail(db, case_a.case_id) if e.stage == "decide"
+        )
+        assert decide_a.fallback_triggered is True
+        assert decide_a.rule_override is False
+
+    # Case B: the LLM proposes validly, but R1 (mandate revoked) overrides it.
+    # The patch is undone; the wrapper's normal success path runs.
+    case_b, is_new_b, _ = _ingest(
+        db, settings, _webhook_body(error_code="R0", sub="sub_disc_b"), "evt_disc_b"
+    )
+    assert is_new_b
+    out_b = run_case(case_b.case_id, settings=settings, db=db)
+    assert out_b.stopping_rule_override is True
+    assert out_b.llm_failure is False
+    decide_b = next(
+        e for e in repo.audit_trail(db, case_b.case_id) if e.stage == "decide"
+    )
+    assert decide_b.fallback_triggered is False
+    assert decide_b.rule_override is True
