@@ -3,7 +3,7 @@
 **Repository:** https://github.com/Utkarshkarki/Salvage
 **Version:** 0.1.0
 **License:** MIT © 2026 Utkarsh Karki
-**Status:** Pipeline complete + hardened. Test suite green (**99 tests across 12 files, all passing** — verified in-session alongside Phase 3).
+**Status:** Pipeline complete + hardened + **Phase 4 production-grade React frontend**. Backend suite green (**117 tests across 13 files, all passing** — verified in-session) + frontend component suite green (**6 tests across 2 files**, Vitest + React Testing Library).
 
 > This document is the authoritative, file-by-file engineering reference for the Reclaim codebase.
 > It does not summarize — it enumerates every directory, file, class, function, schema, and
@@ -19,7 +19,10 @@ subscriptions.** When a customer's card-failure webhook fires, Reclaim walks the
 and stopping rules *dispose*. Every decision is validated with Pydantic, logged to an append-only
 audit trail, and executed **idempotently** so a payment is never double-charged. Phase 3 added an
 **adversarial-resilience test suite**, real concurrency/crash hardening, and a set of genuine
-differentiators so it clears comparable public submissions in this track.
+differentiators so it clears comparable public submissions in this track. Phase 4 (the current state
+of this document) added a **production-grade React SPA** (`frontend/`) plus a **parallel `/api/v1/*`
+JSON namespace** (`api_v1.py`), so the same, already-tested pipeline now exposes both a merchant/
+operator UI and a machine-readable API surface.
 
 It was built for the **Razorpay AI Buildathon — Track 3 (AI agent for revenue recovery)**.
 
@@ -69,9 +72,12 @@ are deliberately halted or escalated to a human. This yields three hard guarante
   resolve the case through the manual- override control plane.
 
 **Note on documentation drift:** earlier drafts of this file cited "68 tests / 7 files" (itself a
-correction of the older "63 tests / 6 files"). This version has been rewritten against the current,
-verified state: **99 tests across 12 files**, matching `README.md` and `PROGRESS.md`. The per-file
-counts and module inventory below reflect the current repository.
+correction of the older "63 tests / 6 files"), then "99 tests / 12 files". This version has been
+rewritten against the current, verified state: **117 backend tests across 13 files** plus **6
+frontend component tests across 2 files** (`Vitest`), matching `PROGRESS.md`. (The human-facing
+`README.md` still states 99 — it lags the Phase 4 additions; `PROGRESS.md` is the live authority and
+is what this document tracks.) The per-file counts and module inventory below reflect the current
+repository.
 
 ---
 
@@ -106,6 +112,25 @@ environment.
 | `ruff` | `>=0.5` | 0.15.11 |
 | `mypy` | `>=1.10` | 2.3.1 |
 
+### Frontend dependencies (from `frontend/package.json` — Phase 4 React SPA)
+The SPA is a separate Node/TypeScript package in `frontend/`, with its own `package.json` /
+`package-lock.json` (committed). Declared with standard `^` ranges; the exact resolved versions
+live in `package-lock.json`.
+
+| Package | Declared range | Role |
+|---------|----------------|------|
+| `react` / `react-dom` | `^18.3.1` | UI runtime |
+| `react-router-dom` | `^6.26.0` | Route-based code-split navigation |
+| `@tanstack/react-query` | `^5.51.0` | Server-state caching / dedup / auto-refetch after mutations |
+| `typescript` | `^5.5.4` | Strict-typed language (app + tooling tsconfigs) |
+| `vite` | `^5.4.0` | Dev server + production build (dev proxy `/api` → `:8000`) |
+| `tailwindcss` | `^3.4.7` | Utility CSS; design tokens centralized in `tailwind.config.ts` |
+| `vitest` | `^2.0.5` | Component test runner (jsdom) |
+| `@testing-library/react` + `user-event` + `jest-dom` | `^16` / `^14.5` / `^6.4` | React Testing Library |
+| `eslint` / `typescript-eslint` + react-hooks/refresh | `^9.8` / `^8` | Linting |
+| `prettier` | `^3.3.3` | Formatting |
+| `@vitejs/plugin-react`, `postcss`, `autoprefixer`, `jsdom`, `@types/*` | — | Build + test toolchain |
+
 ### Technology role map
 | Layer | Technology used |
 |-------|-----------------|
@@ -115,8 +140,10 @@ environment.
 | Async job queue | Celery + Redis / **Upstash** (`rediss://` over TLS); eager mode for tests/demos; **periodic beat schedule** for the stale-lock reconciliation |
 | LLM backend | OpenAI-compatible client (`openai` SDK) → local **Ollama** (e.g. `qwen2.5:32b-instruct`); deterministic offline shim; adversarial-input triage + provenance |
 | Outbound HTTP (Razorpay live) | `httpx` |
-| Templating (dashboard / status / rules / simulator renders) | Jinja2 (declared; pages currently hand-build HTML) |
-| Testing / lint / typing | pytest (incl. thread-based adversarial suite), Ruff, mypy (strict) |
+| Templating (legacy dashboard / status / rules / simulator renders) | Jinja2 (declared; pages currently hand-build HTML) |
+| **JSON API namespace (Phase 4)** | FastAPI `APIRouter` mounted at `/api/v1/*` below the **CORS middleware** — thin wrappers over the same tested logic |
+| **React SPA (Phase 4)** | Vite + React 18 + TypeScript (strict) + Tailwind CSS + TanStack Query + React Router (`frontend/`) |
+| Testing / lint / typing | pytest (incl. thread-based adversarial suite), Ruff, mypy (strict); frontend: Vitest + React Testing Library |
 
 ### Runtime modes (env-gated, safe by default)
 - `LLM_MODE=offline` → deterministic rule shim (hermetic tests & demos, no network).
@@ -128,6 +155,9 @@ environment.
 - `VERIFICATION_ENABLED` → gates the verification-only Subscriptions/Settlements lookups (`1`
   default; `0` makes them silent and hermetic).
 - `RECLAIM_CELERY_EAGER=1` → run Celery tasks synchronously, no broker needed.
+- `RECLAIM_CORS_ORIGINS` → comma-separated browser origins the API allows for the React SPA
+  (default is the Vite dev server only: `http://localhost:5173,http://127.0.0.1:5173`). Never a
+  wildcard; for a real deployment serve SPA+API from one origin so CORS is unnecessary.
 
 ### Databases
 - **SQLite** (default dev engine, `sqlite:///reclaim.db`, plus per-run `reclaim_fresh_*.db` files
@@ -161,14 +191,19 @@ Salvage/
 ├── PROGRESS.md                      # living build-progress journal
 ├── PROJECT_MASTER.md                # this document (generated engineering reference)
 ├── README.md                        # primary human-facing documentation + demo report
-├── pyproject.toml                   # build system, deps, pytest/ruff/mypy config
+├── pyproject.toml                   # build system, backend deps, pytest/ruff/mypy config
 ├── reclaim.db                       # SQLite dev database (runtime artifact, gitignored)
 ├── tasks.md                         # built vs. explicitly out-of-scope (Track 3/4 boundary)
+├── scripts/
+│   ├── dev.sh                       # launch uvicorn + Vite dev together (bash)
+│   └── dev.ps1                      # same, Windows PowerShell
 ├── src/
 │   └── reclaim/
 │       ├── __init__.py              # package docstring + __version__ = "0.1.0"
 │       ├── act.py                   # idempotent, fault-isolated action execution
-│       ├── api.py                   # FastAPI app: webhook + many HTML/JSON surfaces
+│       ├── api.py                   # FastAPI app: webhook + HTML surfaces + CORS + mounts /api/v1
+│       ├── api_v1.py                # Phase 4 JSON namespace (/api/v1/*) — thin wrappers (A1–A7)
+│       ├── api_views.py             # shared derived views (simulator batch + customer status)
 │       ├── audit.py                 # append-only audit-log writer
 │       ├── batch.py                 # `python -m reclaim.batch` CLI entrypoint
 │       ├── celery_app.py            # Celery app + broker config (Upstash TLS / eager / beat)
@@ -182,7 +217,7 @@ Salvage/
 │       ├── models.py                # Pydantic v2 schemas for every boundary
 │       ├── pipeline.py              # run_case / run_batch orchestrator + concurrency
 │       ├── razorpay_client.py       # stub/live client (retry + subscription + settlement)
-│       ├── repo.py                  # read/update helpers over persistence
+│       ├── repo.py                  # read/update helpers (incl. query-layer list_cases)
 │       ├── state_machine.py         # guarded transition table + lifecycle machine
 │       ├── stopping_rules.py        # declarative policy-as-code R1–R7
 │       ├── sweep.py                 # stale-ACTING-lock reconciliation (crash recovery)
@@ -190,8 +225,43 @@ Salvage/
 │       ├── tasks.py                 # Celery task entrypoints (incl. periodic sweep)
 │       ├── verify.py                # verification-only Subscriptions/Settlements lookups
 │       └── webhook.py               # signature verify, parse, dedupe
+├── frontend/                        # Phase 4 — React SPA (Vite + TS strict + Tailwind + React Query)
+│   ├── README.md                    # frontend docs: setup, CORS caveat, testing trade-offs
+│   ├── package.json / package-lock.json
+│   ├── vite.config.ts               # dev server (:5173, /api proxy → :8000) + Vitest config
+│   ├── tailwind.config.ts           # design tokens (diagnose/decide/act/override/recovered/…)
+│   ├── tsconfig.json / tsconfig.app.json / tsconfig.node.json
+│   ├── eslint.config.js / postcss.config.js / .prettierrc / .prettierignore
+│   ├── index.html / public/favicon.svg
+│   └── src/
+│       ├── main.tsx                 # React root: QueryClient + BrowserRouter + StrictMode
+│       ├── App.tsx                  # routes + React.lazy/Suspense + ErrorBoundary
+│       ├── index.css
+│       ├── types.ts                 # hand-maintained TS mirror of the Python enums/shapes
+│       ├── api/
+│       │   ├── client.ts            # typed fetch wrapper (ApiError carrying status + detail)
+│       │   └── endpoints.ts         # one fn per /api/v1 route, typed by ../types
+│       ├── hooks/useApi.ts          # TanStack Query hooks + QUERY_KEYS + override mutations
+│       ├── components/
+│       │   ├── AuditTrail.tsx       # per-stage blocks; override / fallback badges; provenance
+│       │   ├── ErrorBoundary.tsx    # route-level, recoverable render fallback
+│       │   ├── Feedback.tsx         # formatINR / ErrorAlert / EmptyState / LoadingRow
+│       │   ├── Layout.tsx           # app shell (nav: Cases / Rules / Simulator)
+│       │   ├── ManualActions.tsx    # A6 override buttons (ESCALATED only; 409 surfaced)
+│       │   ├── ManualActions.test.tsx  # 4 Vitest tests (override flow)
+│       │   ├── Skeleton.tsx         # CSS skeleton primitives (loading states)
+│       │   ├── StateBadge.tsx       # color-coded state pills
+│       │   └── test/setup.ts        # Vitest setup (React Testing Library + jest-dom)
+│       └── pages/
+│           ├── CaseList.tsx         # state filter + query-layer pagination + empty state
+│           ├── CaseDetail.tsx       # audit trail + operator override control plane
+│           ├── Rules.tsx            # R1–R7 policy-as-code table (live values)
+│           ├── Simulator.tsx        # threshold form + before/after bar comparison
+│           ├── Simulator.test.tsx   # 2 Vitest tests (payload shape + comparison render)
+│           └── CustomerStatus.tsx   # plain-language status, routed OUTSIDE the Layout
 └── tests/
     ├── conftest.py                  # hermetic fixtures (settings/db, no .env)
+    ├── test_api_v1.py               # 18 tests — Phase 4 HTTP-layer JSON API surface
     ├── test_manual.py               # 5 tests — human override actions
     ├── test_metrics.py              # 5 tests — metric counter independence
     ├── test_models.py               # 9 tests — Pydantic boundary validation
@@ -208,16 +278,23 @@ Salvage/
         └── test_sweep.py            # 4 — crash recovery + network-drop idempotency
 
 # Untracked tool caches (gitignored): .mypy_cache/, .pytest_cache/, .ruff_cache/
+# Frontend runtime/build artifacts (gitignored by frontend/.gitignore): node_modules/, dist/
 ```
 
 ### Directory & key file roles
 - **`src/reclaim/`** — the entire application, packaged with `setuptools` under
-  `[tool.setuptools.packages.find] where = ["src"]`. This is a **src-layout** package (24 modules).
-- **`tests/`** — the full pytest suite (12 files, 99 tests), hermetic by construction, with a
-  dedicated `tests/adversarial/` category for failure-injection & resilience.
-- **Root config/docs** — `pyproject.toml` (build + tooling), `.env.example` (env shape),
+  `[tool.setuptools.packages.find] where = ["src"]`. This is a **src-layout** package (**26
+  modules** — Phases 1–4).
+- **`frontend/`** — a **separate Node/TypeScript package** (not part of the Python build): the
+  Phase 4 React SPA (Vite + TS strict + Tailwind + TanStack Query). `package-lock.json` is
+  committed; `node_modules/` and `dist/` are gitignored by `frontend/.gitignore`.
+- **`tests/`** — the full pytest suite (**13 files, 117 tests**), hermetic by construction, with a
+  dedicated `tests/adversarial/` category for failure-injection & resilience and a Phase 4
+  `test_api_v1.py` covering the JSON API surface. The separate `frontend/` component suite adds
+  **6 tests across 2 files** (Vitest).
+- **Root config/docs** — `pyproject.toml` (Python build + tooling), `.env.example` (env shape),
   `README.md`, `PROGRESS.md`, `DECISIONS.md`, `CHANGELOG_SUBMISSION.md`, `tasks.md`, `LICENSE`,
-  `.gitignore`.
+  `.gitignore`, plus `scripts/dev.sh` / `dev.ps1` (one-command dev servers).
 
 ---
 
@@ -260,6 +337,10 @@ This section goes file-by-file through **every** module in `src/reclaim/`.
     `MIN_RECOVERY_AMOUNT`).
   - **Stale-lock reconciliation:** `stale_lock_timeout_seconds` (300.0 — how long a case may sit in
     `ACTING` before the sweep reconciles it to `ESCALATED`).
+  - **Frontend CORS (Phase 4):** `cors_origins` (default
+    `http://localhost:5173,http://127.0.0.1:5173`, env `RECLAIM_CORS_ORIGINS`) — a comma-separated,
+    **non-wildcard** allow-list for the React SPA. Applied as `app.add_middleware(CORSMiddleware)` in
+    `api.py`; the local-demo default (the Vite dev server) is flagged loudly as not deployment-safe.
   - **Concurrency throttle:** `max_concurrency` (5), `llm_backoff_base_seconds` (1.0),
     `llm_backoff_max_seconds` (15.0).
   - `@field_validator("razorpay_webhook_secret")` → raises `ValueError` if empty (ZERO-HALO).
@@ -708,6 +789,10 @@ This section goes file-by-file through **every** module in `src/reclaim/`.
 - **`PM_UPDATE_ACTION = "request_payment_method_update"`**.
 - **`get_case_row(db, case_id)`** → `RecoveryCaseRow | None`.
 - **`all_case_rows(db)`** — ordered list of all case rows.
+- **`list_cases(db, *, state=None, limit=50, offset=0)`** — (Phase 4) query-layer filtered +
+  paginated listing for `GET /api/v1/cases`. Filtering by exact ``state`` and the `limit`/`offset`
+  window happen **in SQL** (not a Python slice of the full set), ordered by id, so the endpoint
+  stays bounded and pagination is stable as the dataset grows.
 - **`set_case_state(db, case_id, state)`** — persists the authoritative state-machine position;
   raises `KeyError` if the row is missing.
 - **`audit_trail(db, case_id)`** → full decision trail (oldest first) as `AuditLogEntry` list.
@@ -819,10 +904,11 @@ This section goes file-by-file through **every** module in `src/reclaim/`.
 
 ---
 
-### 4.24 `src/reclaim/api.py` — FastAPI application
+### 4.24 `src/reclaim/api.py` — FastAPI application (HTML surfaces + CORS + `/api/v1` mount)
 - **Responsibility:** HTTP boundary: webhook ingestion + decision trail, operator, customer, policy,
-  and simulator surfaces.
-- **Routes:**
+  and simulator surfaces — plus (Phase 4) CORS for the React SPA and the mount point that carries
+  the `/api/v1/*` JSON router (`api_v1.py`).
+- **Routes (HTML / legacy):**
   - `GET /health`, `POST /webhook/razorpay`, `GET /cases/{case_id}` (+`?fmt=json`),
     `GET /dashboard`, `GET /metrics`.
   - `POST /cases/{case_id}/approve_retry` and `POST /cases/{case_id}/resolve_human` — operator
@@ -833,9 +919,21 @@ This section goes file-by-file through **every** module in `src/reclaim/`.
   - `GET /rules` — the active policy-as-code stopping rules rendered in plain language with live
     threshold values.
   - `GET /simulator` + `POST /simulator` — rule-sensitivity simulator (see below).
+- **CORS middleware (Phase 4):** `app.add_middleware(CORSMiddleware, allow_origins=...)` built
+  from `settings.cors_origins` (split on commas, empties dropped). **Explicitly not a wildcard** —
+  the default is the Vite dev origin only; the deployment caveat is flagged loudly in code and
+  `frontend/README.md`.
+- **Router mount (Phase 4):** `app.include_router(api_v1_router)` pulls the `/api/v1/*` JSON
+  namespace in below the CORS middleware. `api_v1` is imported at module scope (imported after the
+  app is constructed) to avoid a circular import.
+- **Shared view moves (Phase 4):** `_SIM_THRESHOLD_FIELDS`, `_run_simulated_batch`,
+  `_sim_metric_key`, `_CAUSE_PLAIN`, and `customer_view` are now defined in `api_views.py` (shared
+  with the JSON API so HTML and JSON cannot drift) and **re-imported at the top of this module**, so
+  the existing `/simulator` HTML route and `tests/test_simulator.py` resolve unchanged.
 - **`lifespan(app)`** — async contextmanager: builds `Database`, `init_schema`, stores
   `app.state.db` / `app.state.settings`, logs the llm/act modes, closes DB on shutdown.
-- **`app = FastAPI(title="Reclaim — AI Revenue Recovery", lifespan=lifespan)`**.
+- **`app = FastAPI(title="Reclaim — AI Revenue Recovery", lifespan=lifespan)`** — constructed, then
+  CORS middleware + the `/api/v1` router are applied.
 - **`health()`** → `{"status": "ok", "service": "reclaim"}`.
 - **`razorpay_webhook(request, x_razorpay_signature, x_razorpay_event_id)`** — strict boundary
   order: **signature first → 401** on failure; **parse → 422** on schema error; **ingest/dedupe →
@@ -856,12 +954,12 @@ This section goes file-by-file through **every** module in `src/reclaim/`.
   `_STATUS_PAGE` renderer.
 - **`/rules`** — `rules_page()` + `_RULES_PAGE(settings, rules)` render the `describe_rules`
   output as a table (rule id / priority / forced action / plain-language policy with live values).
-- **Simulator** — `_SIM_THRESHOLD_FIELDS` (the editable subset: amount threshold, days threshold,
-  max retries, cooldown, email cap); `_run_simulated_batch(settings, overrides)` runs the seed-42
-  batch on a **throwaway temp-file DB** (a shared in-memory engine can't cross the thread pool
-  `run_batch` uses) under a `settings.model_copy(update={database_url, ...overrides})` — real
-  settings never mutated; `_sim_metric_key`, `_sim_comparison`, `_SIMULATOR_PAGE`, `simulator_form`
-  (GET), `simulator_run` (POST, form-driven, never lets a simulation crash the page).
+- **Simulator** — `_SIM_THRESHOLD_FIELDS` / `_run_simulated_batch` / `_sim_metric_key` now live in
+  `api_views.py` (shared with `POST /api/v1/simulator/run`). `_run_simulated_batch(settings,
+  overrides)` runs the seed-42 batch on a **throwaway temp-file DB** (a shared in-memory engine can't
+  cross the thread pool `run_batch` uses) under a `settings.model_copy(update={database_url,
+  ...overrides})` — real settings never mutated; this module keeps `_sim_comparison`, `_SIMULATOR_PAGE`,
+  `simulator_form` (GET), `simulator_run` (POST, form-driven, never lets a simulation crash the page).
 - **`dashboard()`** — read-only HTML dashboard: every case card + its full decision trail, with a
   link to per-case pages.
 - **HTML helpers:** `_entry_to_dict`, `_trail_html`, `_stage_block`, `_state_class`,
@@ -870,12 +968,84 @@ This section goes file-by-file through **every** module in `src/reclaim/`.
 
 ---
 
-### 4.25 Test files (`tests/`)
+### 4.25 `src/reclaim/api_views.py` — Shared derived views (HTML ⇄ JSON single source of truth)
+- **Responsibility:** (Phase 4) The server-side *derived* views used by BOTH the legacy HTML routes
+  (`api.py`) and the JSON API (`api_v1.py`), kept free of any FastAPI `app`/routing so it can be
+  imported without a circular dependency (`api_v1.py` must not import `api.py`). Where the HTML and
+  JSON surfaces agree on derived logic, it lives here so they **cannot drift**.
+- **`_SIM_THRESHOLD_FIELDS`** — the tuple of editable simulator thresholds (`escalation_amount_threshold`,
+  `escalation_days_threshold`, `max_retries_per_cycle`, `cooldown_hours`, `email_cap_per_7d`).
+- **`_run_simulated_batch(settings, overrides)`** — runs the seed-42 synthetic batch on a throwaway
+  temp-file SQLite DB (`sqlite:///<tmp>/sim.db` created in a `tempfile.TemporaryDirectory`) under a
+  `settings.model_copy(update={database_url, **overrides})`, returns `compute_metrics` output. The
+  real settings object is **never mutated**; `api.py` re-imports this so `/simulator` and
+  `POST /api/v1/simulator/run` share one implementation, and `tests/test_simulator.py` (which
+  imports it as `reclaim.api._run_simulated_batch`) keeps resolving.
+- **`_sim_metric_key(metrics)`** — human "label → value" rows for the before/after comparison
+  (total cases, recovery rate, amount recovered, escalated, stopped, the three non-conflated
+  counters).
+- **`_CAUSE_PLAIN`** — the `cause → plain-language sentence` map for the customer status view.
+- **`customer_view(row, trail)`** — builds the customer-safe `{heading, reason, next_step}` snapshot
+  from the SAME case row + audit trail the merchant dashboard reads. Pure data, no internal rule
+  ids / stage names / LLM jargon. Shared by `GET /status/{case_id}` (HTML) and
+  `GET /api/v1/status/{case_id}` (JSON).
+
+---
+
+### 4.26 `src/reclaim/api_v1.py` — Phase 4 JSON API namespace (`/api/v1/*`)
+- **Responsibility:** A **parallel surface** to the HTML routes — each endpoint is a **thin wrapper**
+  over the SAME already-tested logic in `repo`, `metrics`, `manual`, `stopping_rules`, and
+  `api_views`. It deliberately does **not** reimplement business logic, so behavior cannot drift
+  between surfaces. Lives in its own module (rather than more routes in `api.py`) to avoid the
+  circular import `api.py` ⇄ `api_v1.py` would create via the DB/settings dependencies.
+- **`router = APIRouter(prefix="/api/v1")`** — mounted by `api.py` with `app.include_router(...)`
+  below the CORS middleware.
+- **Pagination safety:** `_MAX_PAGE = 200`, `_DEFAULT_PAGE = 50` (never an unbounded result set).
+- **Dependencies:** module-level `get_db_dep(request)` / `get_settings_dep(request)` read
+  `request.app.state` with a `get_db()` / `get_settings()` fallback — mirroring `api.py`'s helpers
+  without importing from it; tests override them via `app.dependency_overrides`.
+- **Serializers:** `_audit_entry_dict(e)` (full record, including `input_state` with
+  `llm_provenance`, so the SPA renders provenance + overrides without a second round-trip),
+  `_case_summary(r)` (A1 row shape), `_case_detail_json(db, case_id)` (the shared A2 detail shape =
+  the legacy `case_detail(fmt=json)` base fields + the richer audit trail; 404 `case_not_found`).
+- **Routes (A1–A7):**
+  - **A1** `GET /api/v1/cases` — `state` filter + `limit`/`offset` pagination pushed to the SQL
+    query layer via `repo.list_cases`; invalid state / out-of-bounds → 422. Returns
+    `{items, count}`.
+  - **A2** `GET /api/v1/cases/{case_id}` — `_case_detail_json` (audit trail with provenance); 404.
+  - **A3** `GET /api/v1/metrics` — `compute_metrics` as-is (full shape).
+  - **A4** `GET /api/v1/rules` — `describe_rules` (R1–R7 registry with live values).
+  - **A5** `POST /api/v1/simulator/run` — `SimulatorRunRequest` body (the same editable threshold
+    subset, all optional); runs `_run_simulated_batch` for baseline (empty overrides) + simulated
+    (submitted), returns `{baseline, simulated}`. Never mutates real settings; a thrown error
+    becomes HTTP 500 `simulation_failed:<Type>` rather than crashing the API.
+  - **A6** `POST /api/v1/cases/{case_id}/approve_retry` and `/resolve_human` — thin wrappers over
+    `manual.approve_manual_retry` / `manual.resolve_human`; updated case JSON (A2 shape) on success,
+    `404 case_not_found` on `KeyError`, `409 action not legal` on `IllegalTransitionError`
+    (matching the HTML routes' error semantics sans redirect).
+  - **A7** `GET /api/v1/status/{case_id}` — the shared `customer_view` as `{heading, reason,
+    next_step}`; 404 if unknown; **no internal jargon** (asserted by tests).
+
+---
+
+### 4.27 Test files (`tests/` + `frontend/`)
+Here the suite is listed per file with exact test counts. **Backend: 117 tests across 13 files.**
+**Frontend (Phase 4): 6 component tests across 2 Vitest files** — see the `frontend/` note at the end.
+
 - **`conftest.py`** — hermetic fixtures: an autouse `_no_dotenv` clears the settings cache; a
   `settings` fixture builds a `Settings` with `_env_file=None` (ignores real `.env`), a fixed test
   webhook secret, `llm_mode="offline"`, `act_mode="stub"`, eager Celery, and a per-test SQLite
   file in tmp_path; a `db` fixture builds a `Database`, initializes the schema, resets the cached
   instance, and cleans up. `TEST_WEBHOOK_SECRET` is defined here.
+- **`test_api_v1.py` (18 tests, Phase 4)** — HTTP-layer tests of the `/api/v1/*` namespace via a
+  `TestClient` with `app.dependency_overrides` on `api_v1.get_db_dep` / `get_settings_dep` pointed at
+  the hermetic conftest fixtures (the app lifespan never runs). Deliberately proves the HTTP boundary
+  — status codes, wire shapes, params — NOT business logic already covered elsewhere: A1 happy path /
+  state filter / pagination bounds (422 on `offset=-1`, `limit=0`, `limit=100000`) / invalid state
+  422; A2 detail with `llm_provenance` in the trail + 404; A3 full 17-key metrics shape; A4 R1–R7
+  registry shape; A5 comparison returns + real-settings-not-mutated + empty body ⇒ identical; A6
+  approve/resolve success (A2 shape), 404 unknown, 409 not-ESCALATED; A7 plain-language no-jargon
+  check + 404.
 - **`test_metrics.py` (5 tests)** — pins that the three counters are separate: a rule override
   is not an LLM failure; an LLM failure is not a rule override; a STOP executes no stub action;
   a recovered retry counts as a stub action; an R2 escalation is both an override and a stub
@@ -916,11 +1086,12 @@ This section goes file-by-file through **every** module in `src/reclaim/`.
   parsing (valid/bad-JSON/missing-event-type/deterministic-id), event→case mapping
   (valid/unmappable), dedupe (duplicate is a no-op, and a replay never mutates an already-advanced
   case state).
-- **`tests/adversarial/` (11 tests)** — the Failure Injection & Resilience category (see README
-  "Failure Injection & Resilience"): concurrent duplicate webhooks + concurrent read/write
-  (`test_concurrency.py`), LLM adversarial-input triage + provenance (`test_llm_adversarial.py`),
-  mid-pipeline crash-recovery sweep + network-drop idempotency + periodic-schedule wiring
-  (`test_sweep.py`).
+- **Frontend component tests (6 tests / 2 files, Vitest + React Testing Library)** — cover the
+  logic-bearing components, not static display: `components/ManualActions.test.tsx` (4) — override
+  buttons render, disable while pending, and surface the distinct 409 "already resolved" case vs a
+  generic failure; `pages/Simulator.test.tsx` (2) — the form submits the correct payload shape
+  (only filled fields) and renders the before/after comparison on success. E2E (Playwright/Cypress)
+  is deliberately deferred — the trade-off is documented in `frontend/README.md`.
 
 ---
 
@@ -1067,7 +1238,14 @@ On every Diagnose/Decide call the audit entry's `input_state["llm_provenance"]` 
     `/resolve_human`.
 11. **Surfacing:** `GET /cases/{case_id}` (HTML or `?fmt=json`), `GET /dashboard` (HTML),
     `GET /metrics` (JSON), `GET /status/{case_id}` (customer-facing, plain language),
-    `GET /rules` (active policy), and `GET/POST /simulator` (threshold sensitivity).
+    `GET /rules` (active policy), and `GET/POST /simulator` (threshold sensitivity). **Phase 4
+    adds a parallel JSON namespace** — `GET /api/v1/cases` (filtered + paginated at the SQL layer),
+    `GET /api/v1/cases/{case_id}` (audit trail + provenance), `GET /api/v1/metrics`,
+    `GET /api/v1/rules`, `POST /api/v1/simulator/run`, `POST /api/v1/cases/{id}/approve_retry` &
+    `/resolve_human`, and `GET /api/v1/status/{case_id}` — each a thin wrapper over the same tested
+    logic, consumed by the **React SPA** (`frontend/`): Case List, Case Detail (with override
+    control plane), Rules, Simulator, and the plain-language Customer Status (routed outside the
+    app chrome).
 
 ### 6.2 Metrics computation (read path)
 `metrics.compute_metrics` scans every case + its audit trail in a single pass, deriving:
@@ -1150,6 +1328,7 @@ pip install -e ".[dev]"
 | `EMAIL_CAP_PER_7D` | `1` | R5 |
 | `MIN_RECOVERY_AMOUNT` | `100` | **R7 economic floor** — below this, never auto-retry |
 | `STALE_LOCK_TIMEOUT_SECONDS` | `300` | How long a case may sit in `ACTING` before the sweep escalates it |
+| `RECLAIM_CORS_ORIGINS` | `http://localhost:5173,http://127.0.0.1:5173` | Comma-separated origins the API allows for the React SPA — never a wildcard; narrow for any real deployment |
 | `MAX_CONCURRENCY` | `5` | Batch concurrency cap |
 | `LLM_BACKOFF_BASE_SECONDS` | `1` | Backoff base |
 | `LLM_BACKOFF_MAX_SECONDS` | `15` | Backoff cap |
@@ -1168,10 +1347,10 @@ $env:RECLAIM_FRESH="1"; python -m reclaim.batch
 ```
 `RECLAIM_FRESH=1` uses a fresh per-run SQLite file so metrics always start clean.
 
-### 7.5 Run the API
+### 7.5 Run the API (Python backend)
 ```bash
 uvicorn reclaim.api:app --reload
-# then visit:
+# then visit (HTML/legacy surfaces):
 #   http://127.0.0.1:8000/health
 #   http://127.0.0.1:8000/dashboard
 #   http://127.0.0.1:8000/cases/{case_id}
@@ -1179,23 +1358,59 @@ uvicorn reclaim.api:app --reload
 #   http://127.0.0.1:8000/rules                (active policy-as-code, plain language)
 #   http://127.0.0.1:8000/simulator            (rule-sensitivity before/after)
 #   http://127.0.0.1:8000/metrics
+# JSON namespace (Phase 4, consumed by the React SPA):
+#   http://127.0.0.1:8000/api/v1/cases            (filtered + paginated)
+#   http://127.0.0.1:8000/api/v1/cases/{case_id}  (audit trail + llm_provenance)
+#   http://127.0.0.1:8000/api/v1/metrics
+#   http://127.0.0.1:8000/api/v1/rules
+#   http://127.0.0.1:8000/api/v1/status/{case_id}
 # POST test events to:
 #   http://127.0.0.1:8000/webhook/razorpay   (X-Razorpay-Signature + X-Razorpay-Event-Id headers)
 ```
 
-### 7.6 Run the tests
+### 7.6 Run the React frontend (Phase 4 SPA)
+
+The SPA is a separate Node package under `frontend/`. Start the backend (7.5) and the Vite dev
+server together with a helper script, or run them in two terminals:
+
 ```bash
-pytest                        # 99 tests, all passing (verified)
-pytest tests/adversarial/     # failure-injection & resilience subset (11 tests)
+# one command (choose for your OS):
+scripts/dev.sh        # bash  (macOS / Linux / Git-Bash)
+scripts/dev.ps1       # Windows PowerShell
+
+# or two terminals:
+#   Terminal 1:  uvicorn reclaim.api:app --reload
+#   Terminal 2:  cd frontend && npm install && npm run dev
 ```
 
-### 7.7 Lint & type-check
+Then open **http://localhost:5173** (Cases / Rules / Simulator) and
+**http://localhost:5173/status/{case_id}** for the customer-facing page. The Vite dev server
+proxies `/api` → `:8000`, so no CORS occurs in development; the built app uses relative URLs. See
+`frontend/README.md` for the production/CORS caveat. A `RAZORPAY_WEBHOOK_SECRET` in `.env` is
+required (the backend refuses to boot without it) — run `python -m reclaim.batch` or POST webhooks
+to generate cases before exploring.
+
+### 7.7 Run the tests (backend + frontend)
 ```bash
-ruff check src tests   # lint (E, F, I, UP, B, SIM, RUF; E501 ignored)
-mypy                   # strict type checking over the "reclaim" package
+pytest                         # full backend suite — 117 tests / 13 files, all passing (verified)
+pytest tests/test_api_v1.py    # Phase 4 JSON API HTTP-layer subset (18 tests)
+pytest tests/adversarial/      # failure-injection & resilience subset (11 tests)
+
+cd frontend && npm test        # Phase 4 SPA component suite — 6 tests / 2 files (Vitest)
+npm run build                  # type-check + clean production bundle (dist/)
 ```
 
-### 7.8 Live demo (optional)
+### 7.8 Lint & type-check (backend + frontend)
+```bash
+ruff check src tests   # backend lint (E, F, I, UP, B, SIM, RUF; E501 ignored)
+mypy                   # backend strict type checking over the "reclaim" package
+
+cd frontend && npm run lint        # ESLint (typescript-eslint + react-hooks/refresh)
+npm run typecheck                  # TypeScript strict
+npm run format                     # Prettier
+```
+
+### 7.9 Live demo (optional)
 1. Set `LLM_MODE=online` + your Ollama URL/model, `ACT_MODE=live` + Razorpay test keys + confirm
    `RAZORPAY_RETRY_PATH` (and optionally `RAZORPAY_SUBSCRIPTION_PATH` /
    `RAZORPAY_SETTLEMENT_PATH`), and wire a real provider into `email.send_email_message`.
@@ -1209,6 +1424,9 @@ mypy                   # strict type checking over the "reclaim" package
 - **`src/` layout** — package under `src/reclaim/` found by `setuptools.packages.find` with
   `where = ["src"]`.
 - **Config in `pyproject.toml`** (no `setup.py`/`setup.cfg`).
+- **Separate frontend package (Phase 4)** — `frontend/` is an independent Node/TypeScript package
+  (Vite, its own `package.json` + committed `package-lock.json`, eslint/prettier/tsconfig files),
+  **not** part of the Python build. Both apps are started together by `scripts/dev.sh` / `dev.ps1`.
 
 ### 8.2 Linting & formatting (Ruff)
 - `line-length = 100`; `target-version = "py311"`; sources `["src", "tests"]`.
@@ -1225,11 +1443,14 @@ mypy                   # strict type checking over the "reclaim" package
 ### 8.4 Naming & structure patterns
 - **Modules are single-purpose files** (one responsibility per module): `state_machine.py`,
   `stopping_rules.py`, `pipeline.py`, `act.py`, `webhook.py`, `sweep.py`, `verify.py`, `manual.py`.
-- **Enums as `StrEnum`** with lowercase machine values (`"retry_now"`).
+  Phase 4 adds `api_views.py` (shared derived views) and `api_v1.py` (the JSON namespace) so the
+  HTML and JSON surfaces stay separate yet can't drift.
+- **Enums as `StrEnum`** with lowercase machine values (`"retry_now"`); the SPA mirrors these in
+  `frontend/src/types.ts` as TS union types whose values are the contract.
 - **Dataclasses** (`frozen=True`) for value/result objects (`RuleOutcome`, `ActResult`,
   `CaseOutcome`, `RuleSpec`).
 - **Pydantic v2** for every boundary; `model_validator`/`field_validator` for cross-field and
-  range invariants.
+  range invariants. The JSON API adds small request models (e.g. `SimulatorRunRequest`).
 - **Logger naming** `logging.getLogger("reclaim.<module>")`, with structured log messages like
   `STATE_TRANSITION current=... trigger=... next=...`, `CASE_INGESTED ...`, `ACT_CLAIMED ...`,
   `WEBHOOK_REJECTED reason=...`, `SWEEP_STALE_ACTING case=...`, `DIAGNOSE_TRIAGED reason=...`,
@@ -1263,32 +1484,65 @@ mypy                   # strict type checking over the "reclaim" package
 - **Eager-by-default async** — `RECLAIM_CELERY_EAGER=1` makes Celery synchronous for tests/demos;
   broker mode is opt-in (with a periodic beat schedule for the sweep).
 - **WAL + busy timeout** — file-backed SQLite uses WAL for concurrent reader/writer support.
+- **Parallel surface / shared views (Phase 4)** — the JSON API is a set of thin wrappers over the
+  *same* tested functions the HTML routes call (never a reimplementation); `api_views.py` holds the
+  derived views (simulator batch, customer status) both surfaces share, so HTML ⇄ JSON behavior
+  cannot drift. `api.py` re-imports them so legacy tests resolve unchanged.
+- **Query-layer pagination (Phase 4)** — `GET /api/v1/cases` filters + pages inside SQL
+  (`repo.list_cases`) with bounded `limit`/`offset` (200 max; 422 outside bounds) — never a Python
+  slice of the full set.
+- **CORS, non-wildcard, local-demo default (Phase 4)** — the API allows only the Vite dev origins
+  by default; the caveat ("serve SPA+API from one origin, or narrow the list") is flagged in code +
+  `frontend/README.md`. The dev proxy (`/api` → `:8000`) removes the need for CORS in development.
+- **Server-state, not client-state (Phase 4)** — the SPA uses TanStack Query (caching, dedup,
+  auto-refetch after override mutations) deliberately *not* a Redux-like client store; manual
+  overrides deliberately avoid optimistic UI (a terminal money-path transition — show pending, then
+  let the authoritative detail refetch).
+- **Hand-maintained TS contract (Phase 4)** — `frontend/src/types.ts` is kept in sync with the
+  Python enums/shapes by hand (codegen deferred; the surface is small and the backend
+  `test_api_v1.py` asserts the wire shapes, so drift surfaces there). Documented upgrade path:
+  `openapi-typescript` if the API grows.
 
 ### 8.6 Testing conventions
 - Hermetic by construction: fixtures ignore the real `.env`, use per-test SQLite files, and run in
   `offline` + `stub` + eager modes.
-- **99 tests across 12 files**, covering every domain boundary: webhook signature/parse/dedupe,
-  state-machine legality (incl. manual edges), all seven stopping rules (incl. R7 floor +
-  policy-as-code introspection), Pydantic invariants, synthetic generator invariants, end-to-end
-  fallback/idempotency/state flows, metric-counter independence, the rule simulator, the manual
-  override control plane, and a dedicated **adversarial-resilience** category (real threads +
-  crash + network-drop + injection-triage).
+- **117 backend tests across 13 files**, covering every domain boundary: webhook
+  signature/parse/dedupe, state-machine legality (incl. manual edges), all seven stopping rules
+  (incl. R7 floor + policy-as-code introspection), Pydantic invariants, synthetic generator
+  invariants, end-to-end fallback/idempotency/state flows, metric-counter independence, the rule
+  simulator, the manual override control plane, a **Phase 4 HTTP-layer suite for `/api/v1/*`**
+  (status codes + wire shapes, overriding the api_v1 deps so the app lifespan never touches the
+  real DB), and a dedicated **adversarial-resilience** category (real threads + crash +
+  network-drop + injection-triage).
+- **Frontend: 6 component tests across 2 files** (`frontend/`), Vitest + React Testing Library
+  (jsdom), covering the logic-bearing components — the manual-override flow (buttons, pending
+  disable, distinct 409 vs generic) and the simulator form (payload shape, comparison render).
+  Static display-only components are not exhaustively covered; E2E is deliberately deferred
+  (documented in `frontend/README.md`).
+- **Layer separation:** the Phase 4 HTTP tests prove the JSON boundary, not business logic already
+  proven by the unit tests — no duplicated coverage.
 
 ### 8.7 Documentation & repository conventions
 - `README.md` — primary human-facing documentation: trust-boundary diagram, "LLM proposes / code
   disposes" + R1–R7, three non-conflated metrics with a why-it-matters note, Failure Injection &
   Resilience, verification-only integrations, provenance, security, distributed-idempotency design
-  note, and "What Broke and How We Fixed It".
+  note, and "What Broke and How We Fixed It". (Note: its test-count references still read 99 —
+  it predates Phase 4; `PROGRESS.md` is the live authority.)
 - `PROGRESS.md` — a living build-progress journal (done / decisions + why / in progress / next)
   maintained at session start and after each step (per the project's documented convention).
 - `DECISIONS.md` — a running log of every non-trivial architecture decision and why (SQLAlchemy,
   Upstash, offline by default, each stopping rule's threshold + rationale, WAL, economic floor,
   policy-as-code, provenance, sweep, verification-only reads, the metrics split).
 - `CHANGELOG_SUBMISSION.md` — a dated, phase-level log (Phase 1 core pipeline, Phase 2 UI + real
-  API deepening, Phase 3 hardening + differentiation), distinct from raw git noise.
+  API deepening, Phase 3 hardening + differentiation), distinct from raw git noise. (Phase 4
+  entries can be found in `PROGRESS.md`.)
+- `frontend/README.md` — SPA-specific docs: stack, page table, two-terminal + `scripts/dev.*`
+  setup, the **CORS caveat (local-demo default only)**, testing rationale, and the codegen-vs-
+  hand-maintained-types decision.
 - `tasks.md` — built vs. explicitly out-of-scope (the Track 3/4 boundary decisions).
 - `.env.example` ships placeholders only; real secrets are never committed.
-- `.gitignore` keeps `.env`, `*.db`, caches, `.venv/`, and `.claude/` out of the repo.
+- `.gitignore` keeps `.env`, `*.db`, caches, `.venv/`, and `.claude/` out of the repo;
+  `frontend/.gitignore` keeps `node_modules/` and `dist/` out.
 - Remote `main` branch at `https://github.com/Utkarshkarki/Salvage.git`.
 
 ---
@@ -1296,29 +1550,36 @@ mypy                   # strict type checking over the "reclaim" package
 ## Appendix — File inventory summary
 | Path | Role |
 |------|------|
-| `src/reclaim/` | Entire application (24 modules) |
-| `tests/` | 99 tests across 12 files (incl. `tests/adversarial/`, 11 tests) |
-| `pyproject.toml` | Build + deps + pytest/ruff/mypy config |
+| `src/reclaim/` | Entire application (26 modules) |
+| `tests/` | 117 backend tests across 13 files (incl. `tests/adversarial/`, 11 tests, and `test_api_v1.py`, 18 tests) |
+| `frontend/` | Phase 4 React SPA — 6 component tests across 2 Vitest files |
+| `scripts/` | `dev.sh` / `dev.ps1` — launch backend + Vite together |
+| `pyproject.toml` | Python build + deps + pytest/ruff/mypy config |
+| `frontend/package.json` (+ lock) | Node SPA deps + scripts |
 | `.env.example` | Env template (placeholders) |
 | `README.md` / `PROGRESS.md` | Docs + build journal |
 | `DECISIONS.md` / `CHANGELOG_SUBMISSION.md` / `tasks.md` | Submission artifacts (decisions / phase log / scope map) |
 | `LICENSE` | MIT |
-| `.gitignore` | Tailored ignore rules |
+| `.gitignore` (+ `frontend/.gitignore`) | Tailored ignore rules (root + SPA) |
 | `reclaim.db` | Dev SQLite database (runtime artifact, gitignored) |
 
-**Module inventory (`src/reclaim/`, 24 files):**
-`__init__`, `act`, `api`, `audit`, `batch`, `celery_app`, `config`, `db`, `dispatcher`, `email`,
-`llm_client`, `manual`, `metrics`, `models`, `pipeline`, `razorpay_client`, `repo`, `state_machine`,
-`stopping_rules`, `sweep`, `synthetic`, `tasks`, `verify`, `webhook`.
+**Module inventory (`src/reclaim/`, 26 files):**
+`__init__`, `act`, `api`, `api_v1`, `api_views`, `audit`, `batch`, `celery_app`, `config`, `db`,
+`dispatcher`, `email`, `llm_client`, `manual`, `metrics`, `models`, `pipeline`, `razorpay_client`,
+`repo`, `state_machine`, `stopping_rules`, `sweep`, `synthetic`, `tasks`, `verify`, `webhook`.
 
-**Test inventory (`tests/`, 99 tests / 12 files):**
-`test_manual` (5), `test_metrics` (5), `test_models` (9), `test_pipeline` (9), `test_simulator` (4),
-`test_state_machine` (14), `test_stopping_rules` (20), `test_synthetic` (9), `test_webhook` (13),
-`adversarial/test_concurrency` (3), `adversarial/test_llm_adversarial` (4),
+**Backend test inventory (`tests/`, 117 tests / 13 files):**
+`test_api_v1` (18), `test_manual` (5), `test_metrics` (5), `test_models` (9), `test_pipeline` (9),
+`test_simulator` (4), `test_state_machine` (14), `test_stopping_rules` (20), `test_synthetic` (9),
+`test_webhook` (13), `adversarial/test_concurrency` (3), `adversarial/test_llm_adversarial` (4),
 `adversarial/test_sweep` (4), plus `conftest` fixtures.
+
+**Frontend test inventory (`frontend/`, 6 tests / 2 files):**
+`src/components/ManualActions.test.tsx` (4), `src/pages/Simulator.test.tsx` (2).
 
 ---
 
-*Documented and verified in-session on 2026-09-01. Test suite: **99 passed** (12 files). This is a
-Phase-3 refresh of the earlier "68 tests / 7 files" inventory; all counts, modules, routes, config
-fields, and tests were re-verified against the current source before writing.*
+*Documented and verified in-session on 2026-09-01. Backend suite: **117 passed** (13 files) +
+frontend suite: **6 passed** (2 Vitest files). This is a Phase-4 refresh of the earlier "99 tests /
+12 files" inventory (itself a refresh of "68 tests / 7 files"); all counts, modules, routes, config
+fields, frontend files, and tests were re-verified against the current source before writing.*
