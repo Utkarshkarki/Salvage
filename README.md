@@ -1,23 +1,57 @@
-# Reclaim — AI Revenue Recovery Agent
+<div align="center">
 
-**Reclaim** is a self-contained AI agent that recovers failed recurring revenue on Razorpay subscriptions. When a customer's card fails, a webhook fires, and Reclaim walks the case through a **guarded, explainable state machine** — an LLM *proposes* a recovery action, and hard-coded business/stopping rules *dispose*. Every decision is validated, logged to an append-only audit trail, and executed idempotently so a payment is never double-charged.
+# ⚡ Reclaim
 
-.
+**AI Revenue Recovery Agent for Razorpay Subscriptions**
 
-> **TL;DR for reviewers:** money movement is never left to the model's whim. The LLM narrows the problem to one bounded action; a deterministic, unit-tested stopping-rule layer clamps it; idle/overdue/unsafe/trivial cases are deliberately halted or escalated to a human. The batch report separates *"the LLM was down"* from *"the LLM proposed something unsafe and code rejected it"* — two very different stories to a stakeholder. And it is engineered to survive real-world failure: concurrent webhook replays, mid-pipeline crashes, and lost network responses are each covered by an adversarial test.
+[Quickstart](#quickstart) • [Architecture](#architecture) • [Stopping Rules](#stopping-rules) • [API Reference](#api-reference) • [Testing](#testing) • [Configuration](#configuration)
+
+![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-0.111%2B-009688?style=flat-square&logo=fastapi&logoColor=white)
+![Tests](https://img.shields.io/badge/Tests-99%20passing-22C55E?style=flat-square)
+![License](https://img.shields.io/badge/License-MIT-6366F1?style=flat-square)
+![Code style](https://img.shields.io/badge/Code%20style-Ruff-FFA500?style=flat-square)
+![Type checked](https://img.shields.io/badge/Type%20checked-mypy%20strict-1E40AF?style=flat-square)
+
+</div>
 
 ---
 
-## What it does
+**Reclaim** is a self-contained AI agent that recovers failed recurring revenue on Razorpay subscriptions. When a customer payment fails, a webhook fires and Reclaim walks the case through a **guarded, auditable state machine** — the LLM *proposes* a recovery action, and hard-coded business rules *dispose*. Every decision is validated, logged to an append-only audit trail, and executed idempotently so a payment is **never double-charged**.
 
-- Ingests failed-payment webhooks through the **real Razorpay webhook boundary**: constant-time HMAC‑SHA256 signature verification, strict payload parsing, and `event_id`-based **dedupe** (race-safe via a DB `UNIQUE` constraint).
-- **Diagnoses** the root cause of a failure (insufficient funds, card expired, mandate revoked, bank timeout, …) with a structured, confidence-scored output — after an **adversarial-input triage** that keeps injection-attempting decline codes away from the model.
-- **Decides** exactly one bounded action: `retry_now`, `retry_scheduled`, `request_payment_method_update`, `escalate_human`, or `stop`.
-- **Enforces** seven code-level, declarative stopping rules (R1–R7) that can override any LLM proposal.
-- **Acts** idempotently — a retry can never fire twice for the same `(case, attempt, action)` — and logs everything to an append-only audit trail with per-call **LLM provenance** (model, prompt version, prompt hash).
-- **Reconciles** (verification-only) against real Razorpay test-mode endpoints for Subscriptions status and Settlements — never blocks or reverses.
-- **Recovers from its own crashes**: a periodic sweep finds cases stuck mid-`ACTING` and safely escalates them to human review.
-- Reports batch metrics that distinguish **LLM failures**, **stopping-rule overrides**, and **stub-mode demo actions**.
+> **The core design principle:** money movement is never left to the model's discretion. The LLM narrows the problem to one bounded action. A deterministic, unit-tested stopping-rule layer clamps it. The pipeline survives concurrent webhook replays, mid-pipeline crashes, and lost network responses — each covered by an adversarial test suite.
+
+---
+
+## Table of Contents
+
+- [How it Works](#how-it-works)
+- [Architecture](#architecture)
+- [Trust Boundary](#trust-boundary)
+- [Stopping Rules (R1–R7)](#stopping-rules)
+- [Quickstart](#quickstart)
+- [Configuration](#configuration)
+- [API Reference](#api-reference)
+- [Testing](#testing)
+- [Failure Injection & Resilience](#failure-injection--resilience)
+- [Metrics](#metrics)
+- [What Broke and How We Fixed It](#what-broke-and-how-we-fixed-it)
+- [Project Layout](#project-layout)
+- [License](#license)
+
+---
+
+## How it Works
+
+Reclaim handles the full lifecycle of a failed payment from webhook ingestion to resolution:
+
+1. **Ingests** failed-payment webhooks through the real Razorpay webhook boundary — constant-time HMAC‑SHA256 signature verification, strict payload parsing, and `event_id`-based deduplication (race-safe via a DB `UNIQUE` constraint).
+2. **Diagnoses** the root cause (insufficient funds, card expired, mandate revoked, bank timeout, …) with a structured, confidence-scored LLM output — after an **adversarial-input triage** that blocks injection-attempting decline codes from ever reaching the model.
+3. **Decides** exactly one bounded action: `retry_now`, `retry_scheduled`, `request_payment_method_update`, `escalate_human`, or `stop`.
+4. **Enforces** seven code-level, declarative stopping rules (R1–R7) that can veto any LLM proposal.
+5. **Acts** idempotently — a retry cannot fire twice for the same `(case, attempt, action)` — and logs everything to an append-only audit trail with per-call **LLM provenance** (model, prompt version, prompt hash).
+6. **Reconciles** against real Razorpay test-mode endpoints for Subscriptions and Settlements — verification-only, never blocking or reversing.
+7. **Recovers from its own crashes**: a periodic sweep finds cases stuck mid-`ACTING` and safely escalates them to human review.
 
 ---
 
@@ -44,63 +78,61 @@ The pipeline is a single linear state machine. Transitions are the **only** way 
 
 ---
 
-## Who has authority to do what (trust boundary)
+## Trust Boundary
 
-This diagram is the load-bearing design decision of the whole project. Each layer can only act within its own ring; no layer reaches across.
+This is the load-bearing design decision of the whole project. Each layer can only act within its own ring; no layer reaches across.
 
 ```
-                     ┌─────────────────────────────────────────────────────────┐
-                     │                   LLM AGENT (proposal-only)             │
-                     │   Diagnose → root cause   │  Decide → ONE bounded action│
-                     │   **NO execution authority, NO money movement**        │
-                     └───────────────┬─────────────────────────────────────────┘
-                                     │ proposes (retry_now / retry_scheduled / …)
-                                     ▼
-                     ┌─────────────────────────────────────────────────────────┐
-                     │        STOPPING RULES / POLICY LAYER (R1–R7)            │
-                     │   absolute override authority, in code, not in a prompt │
-                     │   clamp unsafe / trivial / overdue proposals; audit each│
-                     └───────────────┬─────────────────────────────────────────┘
-                                     │ enforces a bounded, final decision
-                                     ▼
-                     ┌─────────────────────────────────────────────────────────┐
-                     │              STATE STORE (idempotency guarantee)        │
-                     │   state machine + audit trail + ExecutedActionRow ledger│
-                     │   (UNIQUE on case/attempt/action ⇒ a retry fires ONCE)  │
-                     └───────────────┬─────────────────────────────────────────┘
-                                     │ dispatch only when the ledger claims
-                                     ▼
-                     ┌─────────────────────────────────────────────────────────┐
-                     │     EXECUTOR (stub or real Razorpay, fault-isolated)    │
-                     │   dispatches under constraint, verification-only reads  │
-                     └─────────────────────────────────────────────────────────┘
+                   ┌─────────────────────────────────────────────────────────┐
+                   │                   LLM AGENT (proposal-only)             │
+                   │   Diagnose → root cause   │  Decide → ONE bounded action│
+                   │          NO execution authority, NO money movement       │
+                   └───────────────┬─────────────────────────────────────────┘
+                                   │ proposes (retry_now / retry_scheduled / …)
+                                   ▼
+                   ┌─────────────────────────────────────────────────────────┐
+                   │        STOPPING RULES / POLICY LAYER (R1–R7)            │
+                   │   absolute override authority, in code, not in a prompt │
+                   │   clamps unsafe / trivial / overdue proposals; logs each│
+                   └───────────────┬─────────────────────────────────────────┘
+                                   │ enforces a bounded, final decision
+                                   ▼
+                   ┌─────────────────────────────────────────────────────────┐
+                   │              STATE STORE (idempotency guarantee)        │
+                   │   state machine + audit trail + ExecutedActionRow ledger│
+                   │   (UNIQUE on case/attempt/action ⇒ a retry fires ONCE)  │
+                   └───────────────┬─────────────────────────────────────────┘
+                                   │ dispatch only when the ledger claim wins
+                                   ▼
+                   ┌─────────────────────────────────────────────────────────┐
+                   │     EXECUTOR (stub or real Razorpay, fault-isolated)    │
+                   │   dispatches under constraint, verification-only reads  │
+                   └─────────────────────────────────────────────────────────┘
 ```
 
-Reading it top to bottom: **the LLM can only suggest; the policy layer has absolute veto authority; the state store is what makes the guarantee real (idempotency); the executor is the only thing that touches the network — and only after a claim is won.** A reviewer should be able to ask "who can move money?" and get a one-line answer: *only the Executor, once, under an enforceable constraint.*
+**The LLM can only suggest. The policy layer has absolute veto authority. The state store makes the guarantee real (idempotency). The executor is the only thing that touches the network — and only after a claim is won.**
 
 ---
 
-## The "LLM proposes, code disposes" layer
+## Stopping Rules
 
-The Decide agent never has the last word on money. `stopping_rules.py` is a pure, unit-tested post-hoc validation layer, independent of the prompt. It is expressed **declaratively (policy-as-code)**: each rule is a self-describing object (id, priority, plain-language policy, condition, forced action) so the policy itself is an auditable artifact — rendered on the [`/rules`](#policy-as-code-the-rules-page) page, not just inline conditionals. First matching rule wins:
+`stopping_rules.py` is a pure, unit-tested, post-hoc validation layer — independent of the prompt. Rules are expressed **declaratively as policy-as-code**: each rule is a self-describing object (id, priority, plain-language policy, condition, forced action). The active policy is introspectable at `GET /rules` with live threshold values.
 
-| Rule | Condition | Enforced action |
-|------|-----------|-----------------|
-| **R1** | Cause is `mandate_revoked` (retries disallowed) | `escalate_human` |
-| **R7** | Amount below the **economic floor** (`MIN_RECOVERY_AMOUNT`, ₹100) — retry cost/risk outweighs value | `stop` (no auto-retry) |
+**First matching rule wins:**
+
+| Rule | Condition | Enforced Action |
+|------|-----------|------------------|
+| **R1** | Cause is `mandate_revoked` — retries are contractually disallowed | `escalate_human` |
+| **R7** | Amount below economic floor (`MIN_RECOVERY_AMOUNT`, default ₹100) — retry cost outweighs value | `stop` |
 | **R2** | Amount above `ESCALATION_AMOUNT_THRESHOLD` | `escalate_human` |
 | **R3** | Days since last attempt above `ESCALATION_DAYS_THRESHOLD` | `escalate_human` |
-| **R4** | Retry proposed but attempts exhausted (`MAX_RETRIES_PER_CYCLE`) | `stop` |
+| **R4** | Retry proposed but max attempts exhausted (`MAX_RETRIES_PER_CYCLE`) | `stop` |
 | **R5** | Payment-method-update email cap reached (`EMAIL_CAP_PER_7D`) | `escalate_human` |
 | **R6** | `retry_now` proposed but cooldown not elapsed (`COOLDOWN_HOURS`) | `retry_scheduled` |
 
-**R7 (economic floor)** is the newest rule and a deliberate product decision: for a trivially small amount (default < ₹100), the cost/risk of making another retry call outweighs the recovery value, so the case is stopped rather than auto-retried — overriding any LLM proposal, exactly like every other rule. It is env-configurable and sits second in priority (below the R1 mandate-safety rule) so a revoked mandate is *always* escalated to a human regardless of amount.
+Each override is recorded with a machine-readable rule id (e.g. `rule=R1 OVERRIDE`) in the audit trail so metrics can show exactly which rules are clamping which proposals.
 
-Each override is recorded with a machine-readable rule id (`rule=R1 OVERRIDE`) so the audit trail and metrics can show a naive proposal being clamped by a business rule.
-
-### Policy-as-code: the `/rules` page
-
-Because the rules are declarative, the active policy is introspectable. `GET /rules` renders every rule in plain language with the **live threshold values** — id, priority, forced action, and a plain-English statement — so a reviewer (or auditor) can see *what the policy actually is*, not just the outputs of its enforcement. Ambient property, not a separate data model.
+> **R7 — Economic Floor:** For trivially small amounts (< ₹100 by default), the cost and risk of another retry call outweighs the recovery value. R7 sits second in priority — below R1 so a revoked mandate is *always* escalated regardless of amount. Both the threshold and priority are env-configurable.
 
 ---
 
@@ -155,100 +187,65 @@ Each of these is backed by more than a test name — see [What Broke and How We 
 
 ---
 
-## Tech stack
+## Tech Stack
 
 | Layer | Technology |
-|-------|-----------|
-| API / webhook | **FastAPI** + Uvicorn |
+|-------|------------|
+| API / Webhook | **FastAPI** + Uvicorn |
 | Validation | **Pydantic v2** (`pydantic-settings`) — every boundary validated, zero-halo |
-| Persistence | **SQLAlchemy 2** (SQLite with **WAL mode** by default, PostgreSQL-compatible schema) |
-| Async jobs | **Celery** + **Redis / Upstash** (`rediss://` over TLS), eager mode for tests/demos, **periodic beat schedule** |
-| LLM | OpenAI-compatible client → local **Ollama** (e.g. `qwen2.5:32b-instruct`); deterministic offline shim for hermetic tests/demos |
+| Persistence | **SQLAlchemy 2** (SQLite with **WAL mode**, PostgreSQL-compatible schema) |
+| Async Jobs | **Celery** + **Redis / Upstash** (`rediss://` TLS), eager mode for tests/demos, periodic beat schedule |
+| LLM | OpenAI-compatible client → local **Ollama** (e.g. `qwen2.5:32b-instruct`); deterministic offline shim for hermetic tests |
 | Templating | Jinja2 (dashboard) |
-| Quality | pytest (**99 tests**), Ruff, mypy (strict) |
+| Code Quality | pytest (**99 tests**), Ruff, mypy (strict) |
 
-**Modes (env-gated, safe by default):**
-- `LLM_MODE=offline` → deterministic rule shim (hermetic tests & demos, no network).
-- `LLM_MODE=online` → real Ollama calls with exponential-backoff on transient timeouts, then the deterministic fallback.
-- `ACT_MODE=stub` → log the would-be Razorpay call (safe for demos, no credentials needed).
-- `ACT_MODE=live` → real test-mode Razorpay calls; **refuses** to run without valid keys and refuses to guess an unconfirmed API route (paths come from config).
-- `RECLAIM_CELERY_EAGER=1` → run celery tasks synchronously, no broker needed.
+### Modes
 
-### Verification-only real integrations (Subscriptions + Settlements)
+| Mode | Flag | Behaviour |
+|------|------|-----------|
+| LLM offline | `LLM_MODE=offline` | Deterministic rule shim — hermetic tests & demos, no network |
+| LLM online | `LLM_MODE=online` | Real Ollama calls with exponential backoff, then deterministic fallback |
+| Act stub | `ACT_MODE=stub` | Logs the would-be Razorpay call; safe for demos, no credentials needed |
+| Act live | `ACT_MODE=live` | Real test-mode Razorpay calls; refuses to run without valid keys |
+| Celery eager | `RECLAIM_CELERY_EAGER=1` | Celery tasks run synchronously; no broker needed |
 
-Beyond Payments retry, Reclaim reconciles *verification-only* against real Razorpay test-mode endpoints (`razorpay_client.subscription_status`, `.settlement_reconciliation`). These are **never** blocking or reversing — they never change a case's terminal state, only record a `verify` audit entry so an auditor can see the external state at the time of the action. Every call is fault-isolated (a failure records, never crashes), and the routes are config-driven and empty by default (ZERO-HALO: we never guess a wire format). In stub mode they return deterministic placeholders so the demo stays hermetic.
+### LLM Call Provenance
 
-### LLM call provenance (model / prompt / reproducibility)
+Every Diagnose and Decide call records in the audit trail's `input_state.llm_provenance`: the **model** name, a **prompt version** identifier (`diagnose-v1` / `decide-v1`), a **content hash** of the prompt sent, and the mode. This enables **model-drift detection** (did the model or prompt change, and did behaviour change with it?) and **reproducibility** (given case C and prompt version V, you can reconstruct exactly what produced a decision).
 
-Every Diagnose and Decide call records, in the audit trail's `input_state.llm_provenance`: the **model** name, a **prompt version** identifier (`diagnose-v1` / `decide-v1`), a **content hash** of the prompt sent, and the mode. This matters for two reasons auditors care about: **model-drift detection** (did we change the model or prompt, and did behaviour change with it?) and **reproducibility** (given case C and prompt version V, you can reconstruct exactly what produced a decision). A future reviewer can trace any audit row back to the exact model + prompt that generated it.
+### Verification-only Integrations
 
----
+Beyond payment retry, Reclaim reconciles *verification-only* against real Razorpay test-mode endpoints (`subscription_status`, `settlement_reconciliation`). These are **never** blocking or reversing — they never change a case's terminal state, only record a `verify` audit entry. Every call is fault-isolated (a failure records, never crashes), and routes are config-driven and empty by default (ZERO-HALO: we never guess a wire format).
 
-## Security: secrets never live in source
 
-- Real credentials are read **only** from `.env`, which is gitignored: Upstash Redis URL, Razorpay test keys, and the webhook signing secret.
-- `.env.example` ships with **placeholders only** — the shape, never the values.
-- `config.py` holds no hardcoded secrets; required secrets **fail loud at load time** (zero-halo).
-- Idempotency is a DB `UNIQUE` constraint, not a promise: a duplicate Act call claims and is logged as a no-op — a double charge is impossible.
-
----
-
-## Concurrency & persistence hardening
-
-- **WAL mode** is enabled on file-backed SQLite (journal_mode=WAL + `synchronous=NORMAL` + a busy timeout) so concurrent readers never block writers and simultaneous writers wait instead of erroring. Verified by `test_concurrent_read_write_does_not_corrupt`.
-- **Stale-lock sweep**: a reconcile function (`reclaim/sweep.py`) finds cases stuck in `ACTING` past `STALE_LOCK_TIMEOUT_SECONDS` and safely reconciles them to `ESCALATED`, and it is wired into Celery as a **periodic beat task every 5 minutes** — so a worker dying mid-pipeline never leaves a case wedged forever.
-- **Economic floor (R7)** stops auto-retry on trivial amounts — see the rules table above.
-
-### Distributed idempotency: from a local UNIQUE to a cluster
-
-Today idempotency is a **single-DB `UNIQUE` constraint** (`ExecutedActionRow` on `(case_id, attempt_number, action)`): the claim is an `INSERT` that wins exactly once, so a duplicated Act call across threads/processes can never double-charge. This is correct for a single instance (or a single shared Postgres). To scale to **multi-instance / multi-region** the same *claim semantics* must survive the store moving off the local file:
-
-- **Keep the DB unique index as the source of truth, but make it distributed.** The idempotency key is already deterministic (`reclaim:{case}:{attempt}:{action}`) and self-describing. Moving the "have I already executed this key?" question into a **distributed store** (Redis `SETNX key <token> NX EX <ttl>` with atomic compare-and-delete, or a Postgres `INSERT ... ON CONFLICT DO NOTHING` on a unique column shared across regions) gives the exact same win-once guarantee without a single-writer bottleneck.
-- **The contract to preserve is the ordering**: *claim first, then dispatch* (see `act._claim`). Whatever store backs the ledger, the side effect must only proceed after a successful claim, and a lost claim (network drop after the server accepted the call) must remain a no-op on retry — which is exactly what the adversarial network-drop test locks in.
-- **Region placement**: in active-active deployments the ledger needs to be reachable from every region (e.g. a global Postgres primary, or a Redis with cross-region replication + `WAIT`) — a local-only ledger in region A would not see a claim made in region B, silently re-enabling double-execution across regions. The design intent is: **one logical idempotency ledger, physically distributed, claim-before-dispatch, TTL-bounded so a truly-lost claim eventually expires and can be retried deliberately under human review.**
-
-This is a design note, not yet the multi-region implementation — the local UNIQUE is correct for this build and is the reference semantics any distributed store must reproduce.
-
----
-
-## Quickstart
-
-Requires Python 3.11+.
 
 ```bash
 # 1. Install
 python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
 
-# 2. Configure (template — never commit the real .env)
+# 2. Configure
 cp .env.example .env
-#   fill in RAZORPAY_WEBHOOK_SECRET (console: python -c "import secrets; print(secrets.token_hex(32))")
-#   optionally add Upstash REDIS_URL + Razorpay test keys for live mode
+# Fill in RAZORPAY_WEBHOOK_SECRET:
+#   python -c "import secrets; print(secrets.token_hex(32))"
+# Optionally add REDIS_URL + Razorpay test keys for live mode
 
-# 3. Run the synthetic batch end-to-end (deterministic, offline/stub)
-RECLAIM_FRESH=1 python -m reclaim.batch        # Windows PowerShell: $env:RECLAIM_FRESH="1"; python -m reclaim.batch
+# 3. Run the synthetic batch (deterministic, offline/stub — no credentials needed)
+RECLAIM_FRESH=1 python -m reclaim.batch
+# Windows PowerShell: $env:RECLAIM_FRESH="1"; python -m reclaim.batch
 
-# 4. Run the API
-uvicorn reclaim.api:app --reload               # then open http://127.0.0.1:8000/dashboard
+# 4. Start the API server
+uvicorn reclaim.api:app --reload
+# → http://127.0.0.1:8000/dashboard
 
-# 5. Tests
-pytest                                     # full suite (99 tests)
-pytest tests/adversarial/                  # failure-injection/resilience subset
+# 5. Run the test suite
+pytest                       # full suite (99 tests)
+pytest tests/adversarial/    # adversarial resilience subset only
 ```
 
-### API surface (beyond the webhook)
+### Demo Batch Output
 
-- `GET /dashboard` — merchant view of every case + full decision trail.
-- `GET /cases/{case_id}` — one case's audit trail; `?fmt=json` for machine-readable.
-- `GET /status/{case_id}` — customer-facing, plain-language status (Phase 2/3 differentiator: no merchant/LLM jargon, no rule ids).
-- `GET /metrics` — the three non-conflated counters + state/cause breakdown.
-- `GET /simulator` — rule-sensitivity simulator: re-run the same seeded batch under proposed thresholds for a before/after comparison (Phase 2 differentiator).
-- `POST /cases/{case_id}/approve_retry` and `POST /cases/{case_id}/resolve_human` — human-in-the-loop override actions, recorded as `manual_override` in the audit trail (Phase 2 differentiator).
-- `GET /rules` — the active policy-as-code rules rendered in plain language.
-
-### Demo batch report (last run)
-
-`RECLAIM_FRESH=1 python -m reclaim.batch` ingests a seeded **synthetic batch** (60 valid + 6 duplicate + 7 rejected deliveries) through the real webhook boundary and reports:
+Running `RECLAIM_FRESH=1 python -m reclaim.batch` ingests a seeded synthetic batch (60 valid + 6 duplicate + 7 rejected deliveries) through the real webhook boundary:
 
 ```
 Total cases                 : 60
@@ -259,11 +256,9 @@ Stopped (deliberate halt)   : 5
 Escalated (human)           : 23
 
 Deterministic fallbacks:
-  LLM call failures           : 0 cases (LLM timeout/validation failed)
-  Stopping rule overrides     : 32 cases {'R1': 12, 'R6': 4, 'R3': 5, 'R2': 6, 'R4': 5}
-  Stub mode actions           : 55 cases (demo/test mode, not a fallback)
-
-Cases resolved without retry: 28   (stopped=deliberate halt + escalated=human review)
+  LLM call failures           : 0 cases   (LLM timeout / validation failed)
+  Stopping rule overrides     : 32 cases  {'R1': 12, 'R6': 4, 'R3': 5, 'R2': 6, 'R4': 5}
+  Stub mode actions           : 55 cases  (demo/test mode — not a fallback)
 
 State distribution          : {'RESOLVED': 37, 'ESCALATED': 23}
 Root-cause breakdown        : {'unknown': 13, 'mandate_revoked': 12,
@@ -271,62 +266,246 @@ Root-cause breakdown        : {'unknown': 13, 'mandate_revoked': 12,
                                'card_expired': 9, 'bank_timeout': 4}
 ```
 
-**Reading the numbers:** the run recovered **₹39,776 (20.7%)**, deliberately **stopped 5** cases and **escalated 23** to humans (28 cases took *no* retry action) — because the stopping-rule layer honored mandate revocations, amounts above threshold, the economic floor, age, attempt limits, email caps, and cooldowns. 32 valid-looking LLM proposals were overridden by a rule; with 0 LLM call failures, every one of those 32 was a *safety override*, not a crash.
+**Reading the numbers:** 32 valid-looking LLM proposals were overridden by a rule; with 0 LLM call failures, every one of those 32 was a *safety override*, not a crash. The stopping-rule layer honored mandate revocations, high-value escalations, economic floor, stale cases, attempt limits, email caps, and cooldowns.
 
-**Try a live demo:** set `LLM_MODE=online` + your Ollama model, `ACT_MODE=live` + Razorpay test keys + confirm `RAZORPAY_RETRY_PATH`, then re-run the batch.
+**Live demo:** set `LLM_MODE=online` + your Ollama model, `ACT_MODE=live` + Razorpay test keys + confirm `RAZORPAY_RETRY_PATH`, then re-run the batch.
+
+## Configuration
+
+All configuration is read from `.env` at startup. Required secrets fail loudly if absent (zero-halo: no defaults that silently hide misconfiguration).
+
+```bash
+# ── LLM Backend ───────────────────────────────────────────────────────
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=qwen2.5:32b-instruct
+OLLAMA_TIMEOUT_SECONDS=30
+LLM_MODE=offline          # offline = deterministic shim | online = real Ollama
+
+# ── Razorpay ──────────────────────────────────────────────────────────
+RAZORPAY_WEBHOOK_SECRET=  # REQUIRED — generate: python -c "import secrets; print(secrets.token_hex(32))"
+RAZORPAY_KEY_ID=          # Required only when ACT_MODE=live
+RAZORPAY_KEY_SECRET=      # Required only when ACT_MODE=live
+ACT_MODE=stub             # stub = log the call | live = real test-mode Razorpay calls
+
+# ── Celery / Redis ────────────────────────────────────────────────────
+REDIS_URL=rediss://default:PASSWORD@host:6379   # Upstash (TLS)
+RECLAIM_CELERY_EAGER=1    # 1 = synchronous tasks, no broker needed (tests/demos)
+
+# ── Database ──────────────────────────────────────────────────────────
+DATABASE_URL=sqlite:///reclaim.db   # Swap to PostgreSQL DSN for production
+
+# ── Stopping Rule Thresholds ──────────────────────────────────────────
+ESCALATION_AMOUNT_THRESHOLD=5000    # ₹ — amounts above go straight to human
+ESCALATION_DAYS_THRESHOLD=7         # days since last attempt before escalation
+MAX_RETRIES_PER_CYCLE=3             # attempt cap before stop
+COOLDOWN_HOURS=24                   # minimum gap between retry_now proposals
+EMAIL_CAP_PER_7D=1                  # payment-method-update email cap per 7 days
+MIN_RECOVERY_AMOUNT=100             # ₹ — economic floor (R7)
+
+# ── Concurrency ───────────────────────────────────────────────────────
+MAX_CONCURRENCY=5
+LLM_BACKOFF_BASE_SECONDS=1
+LLM_BACKOFF_MAX_SECONDS=15
+```
+
+---
+
+## API Reference
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/webhook` | Ingests a Razorpay webhook; verifies HMAC-SHA256, dedupes by `event_id` |
+| `GET` | `/dashboard` | Merchant view of every case with full decision trail |
+| `GET` | `/cases/{case_id}` | Single case audit trail; `?fmt=json` for machine-readable output |
+| `GET` | `/status/{case_id}` | Customer-facing, plain-language status (no merchant/LLM jargon) |
+| `GET` | `/metrics` | Batch metrics — the three non-conflated counters + state/cause breakdown |
+| `GET` | `/rules` | Active policy-as-code rules rendered in plain language with live thresholds |
+| `GET` | `/simulator` | Rule-sensitivity simulator: re-run the same seeded batch under proposed thresholds |
+| `POST` | `/cases/{case_id}/approve_retry` | Human-in-the-loop: approve a retry for an `ESCALATED` case |
+| `POST` | `/cases/{case_id}/resolve_human` | Human-in-the-loop: resolve an `ESCALATED` case manually |
+
+Human-override actions are recorded as `stage=manual_override` in the audit trail and guarded via `manual=True` state-machine edges — the only exit from `ESCALATED` back to `RESOLVED`.
+
+---
+
+## Testing
+
+```bash
+pytest                        # full suite — 99 tests
+pytest tests/adversarial/     # failure injection & resilience subset
+pytest -k "test_stopping"     # stopping rules only
+pytest -k "test_pipeline"     # end-to-end pipeline only
+```
+
+### Test Modules
+
+| Module | Coverage |
+|--------|----------|
+| `test_pipeline.py` | Happy-path and edge-case pipeline flows |
+| `test_stopping_rules.py` | R1–R7 rule enforcement, priority ordering, threshold overrides |
+| `test_webhook.py` | HMAC verification, payload parsing, deduplication |
+| `test_state_machine.py` | Transition table, terminal state absorption, manual edges |
+| `test_metrics.py` | Three-way metric split; no conflation between LLM failures and rule overrides |
+| `test_api_v1.py` | Full HTTP surface — all endpoints, status codes, response schemas |
+| `test_audit_chain.py` | Append-only audit trail integrity, provenance fields |
+| `test_manual.py` | Human-in-the-loop override actions and audit recording |
+| `test_simulator.py` | Rule sensitivity simulator correctness |
+| `tests/adversarial/` | Failure injection & resilience (see below) |
+
+
+
+---
+
+## Failure Injection & Resilience
+
+`tests/adversarial/` attacks the pipeline's failure modes under **real concurrency** and **real crashes** — not sequential happy-path tests.
+
+| Test | What it proves |
+|------|----------------|
+| `test_concurrent_duplicate_webhooks` | The same `event_id` arriving N times simultaneously dedupes to **exactly one** ingest and **exactly one** execution — no double-charge under a race |
+| `test_concurrent_read_write_does_not_corrupt` | With **WAL mode** enabled, concurrent readers and writers never block or corrupt state |
+| `test_concurrent_pipeline_is_idempotent_via_ledger` | A terminal case re-entered from many threads is a no-op for every caller |
+| `test_sweep_finds_stale_acting_cases` | **Mid-pipeline crash recovery**: a case stuck in `ACTING` past the timeout is reconciled to `ESCALATED` (human review) |
+| `test_sweep_ignores_recently_acting_cases` | A legitimately in-progress case is never touched by the sweep |
+| `test_network_drop_idempotency_intercepted` | A retry whose response was lost is intercepted by the same idempotency key — it does **not** double-execute |
+| `test_injection_marker_triaged_before_llm` | Injection-attempting decline codes are triaged before the model is consulted; the LLM's hypothetical response can never influence the final action |
+| `test_malformed_control_chars_triaged` | Control-char and malformed decline codes are caught by the same triage layer |
+| `test_sweep_is_scheduled_periodically` | The stale-lock sweep is wired as a Celery periodic task (every 5 min), not a manually-invoked function |
+
+```bash
+pytest tests/adversarial/ -v
+```
+
+---
+
+## Metrics
+
+Reclaim deliberately splits three distinct concepts that are easy — and dangerous — to conflate in a financial audit context:
+
+| Metric | Meaning |
+|--------|---------|
+| `llm_call_failures` | The LLM call itself failed (timeout, model error, unparseable response). The *"model was down"* story — an availability incident. |
+| `stopping_rule_overrides` | A rule overrode a *valid* LLM proposal (broken down per rule). The *"model proposed something unsafe and code rejected it"* story — a safety win. |
+| `stub_mode_actions` | Actions executed in demo/test mode. An environment property, **not** a fallback. |
+
+**Why this matters:** conflating these into a single "fallback" number is actively misleading in a financial-audit context. "32 fallbacks" tells a regulator nothing — it can't distinguish an outage from a safety win from a demo artifact. `fallback_triggered` in the audit log means precisely *"the LLM call itself failed"* and nothing else.
+
+### Precision Principle
+
+Every metric field is labelled to state exactly what it measures:
+
+- **`recovered_amount`** — sum of amounts on cases whose last act outcome contains `retry_succeeded`. **This does NOT prove settlement.** Settlement confirmation comes from the optional, non-blocking `settlement_reconciliation` verification lookup.
+- **`verification_enabled`** — when set, a best-effort, non-blocking Razorpay settlement lookup is performed after a successful retry. A missing or failed verification does **not** change the case outcome — it is an observational read for auditors, not a gate.
 
 ---
 
 ## What Broke and How We Fixed It
 
-Real incidents from this build, what they did, how each was found, and the test that now prevents regression. This is the engineering history a reviewer should be able to trust.
+Real incidents from this build, with the test that now prevents regression.
+
+---
 
 **1. Concurrency limiter created a new semaphore per call.**
-*What broke:* `ConcurrencyLimiter.run` allocated a fresh `threading.BoundedSemaphore` on every invocation, so the "no more than N in flight" cap never actually capped anything across concurrent callers — a lock that exists only inside a single call is not a limiter.
-*How found:* a code review of `pipeline.run_batch`'s concurrency go. The shared-instrumentation intent (a `peak` counter) was impossible given per-call limits.
-*How fixed:* the semaphore is now created once in `__init__` and shared across all calls; `run` acquires the shared semaphore and updates the `peak` gauge under a lock.
-*Regression test:* `test_concurrency_limiter_bounds_peak` (asserts `peak >= 2` *and* `peak <= cap`).
+
+*What broke:* `ConcurrencyLimiter.run` allocated a fresh `threading.BoundedSemaphore` on every invocation, so the "no more than N in flight" cap never actually capped anything across concurrent callers.
+
+*How found:* code review of `pipeline.run_batch`'s concurrency logic; the shared `peak` counter was impossible given per-call semaphores.
+
+*Fix:* the semaphore is created once in `__init__` and shared across all calls; `run` acquires the shared semaphore and updates the `peak` gauge under a lock.
+
+*Regression test:* `test_concurrency_limiter_bounds_peak` — asserts `peak >= 2` *and* `peak <= cap`.
+
+---
 
 **2. Payment-history anchoring made every retry clamp to "scheduled".**
-*What broke:* retries were computed against a payment history anchored at `now`/ingest, so `days_since_last_attempt` was always ~0 → the 24h cooldown never appeared elapsed → every `retry_now` proposal was clamped to `retry_scheduled` (R6), collapsing the recovery rate and masking the cooldown rule's real intent.
-*How found:* the demo metrics showed an implausibly low recovery rate; tracing the decide inputs showed `days_since_last_attempt=0` for every case.
-*How fixed:* payment history is now anchored at ingest from the webhook's `created_at`, so the cooldown reflects the real retry gap.
+
+*What broke:* retries were computed against a payment history anchored at `now`/ingest, so `days_since_last_attempt` was always ~0 → the 24h cooldown never appeared elapsed → every `retry_now` proposal was clamped to `retry_scheduled` (R6), collapsing the recovery rate.
+
+*How found:* demo metrics showed an implausibly low recovery rate; tracing decide inputs showed `days_since_last_attempt=0` for every case.
+
+*Fix:* payment history is now anchored at ingest from the webhook's `created_at`, so the cooldown reflects the real retry gap.
+
 *Regression test:* `test_pipeline.py`'s healthy-case flow resolves `retry_now` (not clamped) for a case with an elapsed gap.
 
+---
+
 **3. A single ambiguous "fallback" counter conflated three different stories.**
-*What broke:* `fallback_triggered` (and the metrics built on it) lumped *LLM call failures*, *stopping-rule overrides*, and *stub-mode actions* into one number — "32 fallbacks" couldn't distinguish an outage from a safety win from a demo artifact.
-*How found:* mapping the audit trail to the metrics revealed two different scenarios landing in the same bucket (see [Three metrics](#three-metrics-that-are-deliberately-not-conflated)).
-*How fixed:* split into `llm_call_failures`, `stopping_rule_overrides` (broken down by rule), and `stub_mode_actions`; `fallback_triggered` now means exactly *LLM failure*.
+
+*What broke:* `fallback_triggered` lumped LLM call failures, stopping-rule overrides, and stub-mode actions into one number — "32 fallbacks" couldn't distinguish an outage from a safety win from a demo artifact.
+
+*How found:* mapping the audit trail to the metrics revealed two different scenarios landing in the same bucket.
+
+*Fix:* split into `llm_call_failures`, `stopping_rule_overrides` (by rule), and `stub_mode_actions`; `fallback_triggered` now means exactly *LLM call failure*.
+
 *Regression test:* `test_metrics.py` pins that an R1 override lands only in `stopping_rule_overrides` (never `llm_call_failures`) and vice-versa.
 
 ---
 
-## Layout
+---
+
+## Project Layout
 
 ```
 src/reclaim/
-  models.py          Pydantic v2 schemas for every agent boundary
-  state_machine.py   guarded transition table (the only way progress is recorded)
-  stopping_rules.py  declarative policy-as-code R1–R7 (+ /rules introspection)
-  pipeline.py        run_case / run_batch orchestrator + concurrency cap + backoff
-  webhook.py         signature verify, parse, dedupe
-  act.py             idempotent action execution + audit
-  razorpay_client.py stub/live client (retry + subscription + settlement, idempotency keys)
-  llm_client.py      offline shim / online wrapper + adversarial triage + provenance
-  sweep.py           stale-ACTING-lock reconciliation (mid-pipeline crash recovery)
-  verify.py          verification-only Subscriptions/Settlements lookups
-  metrics.py         batch report (three non-conflated counters)
-  api.py, audit.py, repo.py, db.py, celery_app.py, tasks.py, dispatcher.py, email.py, manual.py
-tests/               99 tests — core + API + adversarial resilience
-tests/adversarial/   failure-injection & resilience suite
-DECISIONS.md         running log of architecture decisions (and why)
-CHANGELOG_SUBMISSION.md   dated log of major phase-level changes
-tasks.md             built vs. explicitly out-of-scope (Track 3/4 boundary)
-pyproject.toml       build + pytest/ruff/mypy config
+  models.py            Pydantic v2 schemas for every agent boundary
+  state_machine.py     Guarded transition table (the only way progress is recorded)
+  stopping_rules.py    Declarative policy-as-code R1–R7 (+ /rules introspection)
+  pipeline.py          run_case / run_batch orchestrator + concurrency cap + backoff
+  webhook.py           Signature verify, parse, dedupe
+  act.py               Idempotent action execution + audit
+  razorpay_client.py   Stub/live client (retry + subscription + settlement + idempotency keys)
+  llm_client.py        Offline shim / online wrapper + adversarial triage + provenance
+  sweep.py             Stale-ACTING-lock reconciliation (mid-pipeline crash recovery)
+  verify.py            Verification-only Subscriptions/Settlements lookups
+  metrics.py           Batch report (three non-conflated counters)
+  api.py               FastAPI application, routes, Jinja2 dashboard
+  audit.py             Append-only audit trail writer
+  repo.py              Repository layer (case CRUD)
+  db.py                SQLAlchemy engine + WAL mode setup
+  celery_app.py        Celery app + periodic beat schedule
+  tasks.py             Celery task definitions (pipeline, sweep)
+  dispatcher.py        Action dispatch routing
+  email.py             Payment-method-update email stub
+  manual.py            Human-in-the-loop override actions
+
+tests/
+  conftest.py          Shared fixtures (in-memory DB, test client)
+  test_pipeline.py     End-to-end pipeline flows
+  test_stopping_rules.py  R1–R7 rule enforcement
+  test_webhook.py      Signature verification, deduplication
+  test_state_machine.py   Transition table correctness
+  test_metrics.py      Three-way metric split
+  test_api_v1.py       Full HTTP surface
+  test_audit_chain.py  Audit trail integrity
+  test_manual.py       Human override flows
+  test_simulator.py    Rule sensitivity simulator
+  adversarial/         Failure injection & resilience suite (9 tests)
+
+DECISIONS.md           Architecture decisions log (what was decided and why)
+CHANGELOG_SUBMISSION.md  Dated phase-level changelog
+tasks.md               Built vs. explicitly out-of-scope (track boundary)
+pyproject.toml         Build + pytest/ruff/mypy config
+.env.example           Environment template (never commit the real .env)
 ```
+
+---
+
+## Security
+
+- Real credentials are read **only** from `.env`, which is gitignored: Upstash Redis URL, Razorpay test keys, webhook signing secret.
+- `.env.example` ships with **placeholders only** — the shape, never the values.
+- `config.py` holds no hardcoded secrets; required secrets **fail loud at load time** (zero-halo: no silent defaults).
+- Idempotency is enforced by a DB `UNIQUE` constraint, not a promise — a duplicate Act call is caught by the database before any side effect is dispatched.
+- HMAC-SHA256 signature verification uses a **constant-time comparison** to prevent timing attacks.
 
 ---
 
 ## License
 
 [MIT](LICENSE) © 2026 Utkarsh Karki
+
+---
+
+<div align="center">
+<sub>Built for the Razorpay AI Buildathon — Track 3: Revenue Recovery</sub>
+</div>
