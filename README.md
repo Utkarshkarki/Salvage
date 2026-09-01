@@ -2,7 +2,7 @@
 
 **Reclaim** is a self-contained AI agent that recovers failed recurring revenue on Razorpay subscriptions. When a customer's card fails, a webhook fires, and Reclaim walks the case through a **guarded, explainable state machine** — an LLM *proposes* a recovery action, and hard-coded business/stopping rules *dispose*. Every decision is validated, logged to an append-only audit trail, and executed idempotently so a payment is never double-charged.
 
-Built for the **Razorpay AI Buildathon — Track 3 (AI agent for revenue recovery)**.
+.
 
 > **TL;DR for reviewers:** money movement is never left to the model's whim. The LLM narrows the problem to one bounded action; a deterministic, unit-tested stopping-rule layer clamps it; idle/overdue/unsafe/trivial cases are deliberately halted or escalated to a human. The batch report separates *"the LLM was down"* from *"the LLM proposed something unsafe and code rejected it"* — two very different stories to a stakeholder. And it is engineered to survive real-world failure: concurrent webhook replays, mid-pipeline crashes, and lost network responses are each covered by an adversarial test.
 
