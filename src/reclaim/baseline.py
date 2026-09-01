@@ -24,6 +24,11 @@ class StrategyResult:
 
     name: Literal["do_nothing", "retry_everything", "reclaim"]
     gateway_calls: int
+    # How many of those attempted gateway calls actually succeeded (per the
+    # simulated/realistic success model). Lets a reader see the success rate,
+    # not just the resulting ₹ amount — a strategy can net ₹0 either by not
+    # calling or by calling and failing, and this column disambiguates.
+    cases_succeeded: int
     gross_recovered: float
     # For naive strategies: amount that real policy would have blocked
     policy_blocked_value: float
@@ -47,6 +52,7 @@ def _simulate_do_nothing(db, case_ids, settings):
     return StrategyResult(
         name="do_nothing",
         gateway_calls=0,
+        cases_succeeded=0,
         gross_recovered=0.0,
         policy_blocked_value=0.0,
         net_recovered=0.0,
@@ -113,11 +119,13 @@ def _simulate_retry_everything(db, case_ids, settings, seed: int = 42):
     gateway_calls = len(case_ids)
 
     gross_recovered = 0.0
+    cases_succeeded = 0
     for case_id in case_ids:
         row = repo.get_case_row(db, case_id)
         if row is not None:
             case = repo.row_to_case(row)
             if _retry_would_succeed(case.failure_reason, rng):
+                cases_succeeded += 1
                 gross_recovered += case.amount
 
     # Policy-blocked value and net are computed by the caller once the real
@@ -129,6 +137,7 @@ def _simulate_retry_everything(db, case_ids, settings, seed: int = 42):
     return StrategyResult(
         name="retry_everything",
         gateway_calls=gateway_calls,
+        cases_succeeded=cases_succeeded,
         gross_recovered=gross_recovered,
         policy_blocked_value=policy_blocked_value,
         net_recovered=net_recovered,
@@ -196,17 +205,20 @@ def _simulate_reclaim_with_realistic_outcomes(db, case_ids, settings, seed: int 
 
     # For each retry-eligible case, apply the realistic success model.
     gross_recovered = 0.0
+    cases_succeeded = 0
     for case_id in case_ids:
         if case_id in retry_eligible:
             row = repo.get_case_row(db, case_id)
             if row is not None:
                 case = repo.row_to_case(row)
                 if _retry_would_succeed(case.failure_reason, rng):
+                    cases_succeeded += 1
                     gross_recovered += case.amount
 
     return StrategyResult(
         name="reclaim",
         gateway_calls=gateway_calls,
+        cases_succeeded=cases_succeeded,
         gross_recovered=gross_recovered,
         policy_blocked_value=0.0,  # Not applicable - this IS the real policy
         net_recovered=gross_recovered,  # No chargeback adjustment
@@ -341,6 +353,7 @@ def _run_baseline_comparison(
     retry_everything_result = StrategyResult(
         name="retry_everything",
         gateway_calls=retry_everything_result.gateway_calls,
+        cases_succeeded=retry_everything_result.cases_succeeded,
         gross_recovered=retry_everything_result.gross_recovered,
         policy_blocked_value=policy_blocked_value,
         net_recovered=(
@@ -386,10 +399,10 @@ if __name__ == "__main__":
 
     # Print table header
     print(
-        f"\n{'Strategy':<20} {'Gateway Calls':>15} {'Gross Recovered':>20} "
+        f"\n{'Strategy':<20} {'Gateway Calls':>15} {'Cases Succeeded':>15} {'Gross Recovered':>20} "
         f"{'Policy-Blocked Value':>22} {'Net Recovered':>20}"
     )
-    print("-" * 100)
+    print("-" * 126)
 
     for strategy in strategies:
         # Format currency values
@@ -398,14 +411,23 @@ if __name__ == "__main__":
         net_str = f"₹{strategy.net_recovered:,.2f}"
 
         print(
-            f"{strategy.name:<20} {strategy.gateway_calls:>15} {gross_str:>20} "
+            f"{strategy.name:<20} {strategy.gateway_calls:>15} {strategy.cases_succeeded:>15} {gross_str:>20} "
             f"{blocked_str:>22} {net_str:>20}"
         )
 
     # Add comparative analysis
-    print("\n" + "=" * 70)
+    print("\n" + "=" * 126)
+    print("NOTE: The 'reclaim' row above is a probabilistic simulation using realistic retry-success")
+    print("rates (drawn from decline-code distributions). It reflects what the real policy would")
+    print("achieve IF each retry faced industry-average success probabilities — distinct from the")
+    print("live batch report's stub-mode (deterministic) result. Compare dashboards/batch output")
+    print("(e.g., ₹39,776 stub) to this simulation (e.g., ₹24,089) to see the recovery gap when")
+    print("realistic chargeback risk is factored in. The 'retry_everything' row uses the same")
+    print("success model; stopping rules (R1–R7) are the only policy difference between them.")
+    print("=" * 126)
+    print("\n" + "=" * 126)
     print("Comparative Analysis")
-    print("=" * 70)
+    print("=" * 126)
 
     reclaim = comparison.reclaim
     retry_all = comparison.retry_everything

@@ -264,9 +264,9 @@ the distribution (e.g., "17th percentile — below median"). Reports this explic
 omitting it — **honest disclosure, not a flattering number**. Added to metrics output via new
 `headline_batch_percentile` field.
 
-**A4** `tests/test_robustness.py` — 8 tests: runner produces N independent results (different seeds),
-percentile/stddev math correct against known small distribution, CLI entry point runs offline,
-dataclass shapes.
+**A4** `tests/test_robustness.py` — 7 tests (planned 8; see count correction above):
+runner produces N independent results (different seeds), percentile/stddev math correct
+against known small distribution, CLI entry point runs offline, dataclass shapes.
 
 ### Part B — Counterfactual baseline comparison
 
@@ -284,8 +284,10 @@ retries that real policy would have blocked.
 Gross Recovered, Policy-Blocked Value, Net Recovered. Includes comparative analysis: call reduction %,
 net economic advantage.
 
-**B4** `tests/test_baseline.py` — 12 tests: `do_nothing` recovers ₹0, `retry_everything` makes one
-call per case, real policy's calls ≤ `retry_everything`, chargeback-netting math correct.
+**B4** `tests/test_baseline.py` — 10 tests (planned 12; `_identify_policy_blocked_cases`
+removed in the fix round, so its test was dropped): `do_nothing` recovers ₹0,
+`retry_everything` makes one call per case, real policy's calls ≤ `retry_everything`,
+chargeback-netting math correct.
 
 ### Part C — Hash-chained audit log
 
@@ -350,8 +352,12 @@ Test files:
 - `tests/test_audit_chain.py` (11 tests)
 - `tests/test_llm_isolation.py` (3 tests)
 
-**Backend test count: 117 → 117 + 34 = 151 new tests (34 in Phase 5, all passing).**
-**Full suite verified: existing 117 + Phase 5 34 = 151 total, backend + frontend still green.**
+**CORRECTED (2026-09-01): real count is 149, not 151.** The Phase 5 files hold 31
+tests, not 34 (test_baseline.py has 10, not 12; test_robustness.py has 7, not 8;
+the other two files match their plan): 8+12+11+3 planned → 7+10+11+3 actual = 31.
+Plus 1 regression test in `tests/adversarial/test_audit_chain_concurrency.py`
+(from the post-submission fix) = 32 new tests since Phase 4's 117. **117 + 32 = 149.
+Full suite: 149 collected, 149 passing (verified live).**
 
 Documentation updates:
 - README: "Precision principle" section added
@@ -400,5 +406,20 @@ regression tests).
    Phase 5 CLIs printed `₹`/`✓` and crashed on a cp1252 console
    (`UnicodeEncodeError`). Fixed by `sys.stdout.reconfigure(encoding="utf-8",
    errors="replace")` in each CLI `__main__` so the tools never crash on output.
+31. **Collection-blocking import fixed + full-suite + CLI verification (2026-09-01)** —
+   `tests/test_baseline.py` still imported `_identify_policy_blocked_cases`, the
+   function removed during fix #4 (replaced by inline logic). This raised an
+   ImportError at collect time and blocked the WHOLE suite. Fixed: import +
+   test renamed to `_identify_retry_eligible_cases` (returns a `set`, not a
+   `dict`), assertion updated accordingly. **Full suite: 149 collected, 149
+   passed** — no failures. Then regenerated a fresh DB and ran all three CLIs
+   with real output (RECLAIM_FRESH=1):
+   - `python -m reclaim.batch` → 24 recovered / 20.7% / ₹39,776 (matches the
+     documented demo);
+   - `python -m reclaim.baseline` → do_nothing ₹0 · retry_everything 60 calls /
+     ₹55,382 gross / -₹61,895.90 net (85% chargeback on ₹137,974 blocked) ·
+     reclaim 24 calls / ₹24,089 net; calls reduced 60.0% vs retry-everything;
+   - `python -m reclaim.verify_audit_chain` (against the fresh DB) → **✓ Chain
+     is valid (235 entries)**.
 
 <｜DSML｜parameter name="old_string_22">

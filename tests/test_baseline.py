@@ -8,7 +8,7 @@ from reclaim.baseline import (
     run_baseline_comparison,
     _simulate_do_nothing,
     _simulate_retry_everything,
-    _identify_policy_blocked_cases,
+    _identify_retry_eligible_cases,
 )
 
 
@@ -17,12 +17,14 @@ def test_strategy_result_dataclass():
     result = StrategyResult(
         name="do_nothing",
         gateway_calls=0,
+        cases_succeeded=0,
         gross_recovered=0.0,
         policy_blocked_value=0.0,
         net_recovered=0.0,
     )
     assert result.name == "do_nothing"
     assert result.gateway_calls == 0
+    assert result.cases_succeeded == 0
     assert result.gross_recovered == 0.0
     assert result.policy_blocked_value == 0.0
     assert result.net_recovered == 0.0
@@ -33,6 +35,7 @@ def test_baseline_comparison_dataclass():
     do_nothing = StrategyResult(
         name="do_nothing",
         gateway_calls=0,
+        cases_succeeded=0,
         gross_recovered=0.0,
         policy_blocked_value=0.0,
         net_recovered=0.0,
@@ -41,6 +44,7 @@ def test_baseline_comparison_dataclass():
     retry_everything = StrategyResult(
         name="retry_everything",
         gateway_calls=10,
+        cases_succeeded=5,
         gross_recovered=1000.0,
         policy_blocked_value=200.0,
         net_recovered=830.0,  # 1000 - (200 * 0.85)
@@ -49,6 +53,7 @@ def test_baseline_comparison_dataclass():
     reclaim = StrategyResult(
         name="reclaim",
         gateway_calls=5,
+        cases_succeeded=4,
         gross_recovered=800.0,
         policy_blocked_value=0.0,
         net_recovered=800.0,
@@ -99,13 +104,13 @@ def test_retry_everything_strategy(settings, db):
     assert result.net_recovered >= 0.0
 
 
-def test_identify_policy_blocked_cases(settings, db):
-    """Test identification of cases that would be blocked by real policy."""
-    # This is a smoke test - we just want to ensure it runs without error
+def test_identify_retry_eligible_cases(settings, db):
+    """Test identification of cases that would be retry-eligible under real policy."""
+    # Smoke test: empty case list should yield empty set, no error
     case_ids = []
-    blocked = _identify_policy_blocked_cases(db, case_ids, settings)
-    assert isinstance(blocked, dict)
-    assert len(blocked) == 0
+    eligible = _identify_retry_eligible_cases(db, case_ids, settings)
+    assert isinstance(eligible, set)
+    assert len(eligible) == 0
 
 
 def test_run_baseline_comparison_smoke_test(settings, db):
