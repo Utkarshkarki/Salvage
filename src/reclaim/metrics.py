@@ -32,6 +32,23 @@ _EXECUTED_ACTIONS = {
 
 
 def compute_metrics(db: Database, settings: Settings) -> dict[str, object]:
+    """Compute batch-level metrics from the audit trail + case states.
+
+    Every metric is derived from what the pipeline actually recorded — no guesses.
+    Field labels are precise about what each metric proves vs. what requires external
+    confirmation (see README "Precision principle" section).
+
+    Returns a dict with:
+    - total_cases: total cases processed
+    - amount_at_risk: sum of all case amounts
+    - recovered_amount: sum of amounts on cases where retry_now succeeded
+      (PRECISION: This proves Reclaim made a call; see verification_enabled setting for settlement confirmation)
+    - recovery_rate: recovered_amount / amount_at_risk
+    - llm_call_failures: cases where Diagnose/Decide LLM call itself failed → deterministic fallback
+    - stopping_rule_overrides: cases where R1–R7 overrode an LLM proposal
+    - stub_mode_actions: in ACT_MODE=stub, actions executed (environment property, not model property)
+    - cases_resolved_without_retry: stopped + escalated (no retry action taken)
+    """
     rows = repo.all_case_rows(db)
     total = len(rows)
 
@@ -111,6 +128,8 @@ def compute_metrics(db: Database, settings: Settings) -> dict[str, object]:
             rule_override_cases.append(case.case_id)
 
         # Recovered == resolved by an actual successful retry (money in).
+        # PRECISION: This proves Reclaim's gateway call succeeded. Settlement confirmation
+        # comes from optional verification_enabled setting + razorpay_client.settlement_reconciliation.
         if case.state == CaseState.RESOLVED and _last_act_outcome(
             db, case.case_id, "retry_succeeded"
         ):
@@ -130,14 +149,16 @@ def compute_metrics(db: Database, settings: Settings) -> dict[str, object]:
     cases_resolved_without_retry = len(stopped_cases) + len(escalated_cases)
 
     return {
+        # Basic counts
         "total_cases": total,
         "state_distribution": dict(state_dist),
         "amount_at_risk": round(amount_at_risk, 2),
+        # Recovery metrics (PRECISION: gateway call success, not settlement confirmation)
         "recovered_cases": len(recovered_cases),
         "recovered_amount": round(recovered_amount, 2),
         "recovery_rate": round(recovery_rate, 4),
         "cause_breakdown": dict(cause_breakdown),
-        # Three separate counters (unambiguous labels)
+        # Three separate counters (deliberately unambiguous and not conflated)
         "llm_call_failures": len(llm_failure_cases),
         "llm_failure_cases": llm_failure_cases,
         "stopping_rule_overrides": len(rule_override_cases),

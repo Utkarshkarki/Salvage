@@ -57,7 +57,7 @@ class RecoveryCaseRow(Base):
 
 class AuditLogRow(Base):
     """Append-only decision trail. Insert-only by contract; the writer never
-    exposes update/delete."""
+    exposes update/delete. Hash-chained for tamper-detection."""
 
     __tablename__ = "audit_log"
 
@@ -71,6 +71,9 @@ class AuditLogRow(Base):
     outcome: Mapped[str] = mapped_column(String(255), default="")
     fallback_triggered: Mapped[bool] = mapped_column(Boolean, default=False)
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    # Hash-chain columns (Phase 5)
+    prev_hash: Mapped[str] = mapped_column(String(64), default="")  # Previous entry's hash
+    entry_hash: Mapped[str] = mapped_column(String(64), default="")  # This entry's hash
 
 
 class ExecutedActionRow(Base):

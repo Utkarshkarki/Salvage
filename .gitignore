@@ -18,6 +18,9 @@ build/
 *.sqlite3
 celerybeat-schedule*
 
+# Local database backups (pre-regenerate snapshots; never committed)
+.db-backup-*/
+
 # Tooling caches
 .pytest_cache/
 .ruff_cache/

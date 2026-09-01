@@ -27,6 +27,12 @@ dev = [
     "mypy>=1.10",
 ]
 
+[project.scripts]
+reclaim-batch = "reclaim.batch:main"
+reclaim-robustness = "reclaim.robustness:main"
+reclaim-baseline = "reclaim.baseline:main"
+reclaim-verify-audit-chain = "reclaim.verify_audit_chain:main"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 

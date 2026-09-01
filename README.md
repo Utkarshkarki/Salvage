@@ -114,6 +114,23 @@ Because the rules are declarative, the active policy is introspectable. `GET /ru
 
 ---
 
+## Precision principle: what each metric actually measures
+
+Every metric field is labeled to state precisely what it measures — the distinction between *what Reclaim could prove* and *what external state actually confirms* is explicit, not implicit:
+
+- **`recovered_amount`** — the sum of all amounts on cases whose last act outcome contains `retry_succeeded`. A successful `retry_now` gateway call to Razorpay is what counts. **This does NOT prove the customer's money actually settled.** Settlement confirmation comes from the optional verification-only `settlement_reconciliation` lookup (see below).
+  - Why it matters: a Razorpay retry call is a necessary condition for recovery, but a network drop after the API accepted could mean the payment never executed server-side, or executed but the customer's bank dropped it. The metric reports what *Reclaim* can prove (a call was made and logged), not what *Settlements* confirms (funds actually landed).
+  
+- **`verification_enabled` setting and `verify.py` verification-only reads** — when enabled, after a `retry_now` recovery Reclaim performs a best-effort, **non-blocking** lookup of the settlement status via `razorpay_client.settlement_reconciliation`. If verification is disabled or the lookup fails, the case still resolves as recovered; if verification succeeds, the audit trail records the settlement status. **A missing or failed verification does not change the case outcome.** This is an *observational read* that an auditor can use to corroborate external state, not a gate that blocks or reverses the recovery.
+  
+- **`stopping_rule_overrides`** — cases where the Decide agent proposed an action (e.g., `retry_now`) that one of the R1–R7 rules overrode with a different final action. The count and per-rule breakdown are auditable proof that the policy-as-code layer rejected a naive proposal and enforced a business rule.
+
+- **`llm_call_failures`** — cases where the LLM call itself failed (network timeout, model error, unparseable response) and fell back to the deterministic default. This is the "model was down" story — availability, not safety.
+
+**The documentation convention**: every metric field's comment or docstring in `metrics.py` and the HTTP responses (`api_v1.py`) explicitly names what it proves vs. what requires external confirmation. This keeps reviewers from over-interpreting the numbers.
+
+---
+
 ## Failure Injection & Resilience
 
 A dedicated test category (`tests/adversarial/`) attacks the pipeline's failure modes under **real concurrency** and **real crashes**, not sequential happy-path tests. These are the resilience guarantees a production recovery agent must actually hold:

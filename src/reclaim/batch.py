@@ -108,6 +108,13 @@ def main() -> int:
     from .pipeline import run_batch
 
     run_batch(new_ids, settings=settings, db=db)
+
+    # The hash chain is derived in a single sequential pass AFTER the
+    # concurrent writes complete (compute-at-write would race and fork the
+    # chain). See audit.finalize_audit_chain / audit_chain module doc.
+    from .audit import finalize_audit_chain
+    finalize_audit_chain(db)
+
     metrics = compute_metrics(db, settings)
     _print_report(metrics, db, new_ids)
     db.close()
