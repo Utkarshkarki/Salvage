@@ -3,7 +3,7 @@
 **Repository:** https://github.com/Utkarshkarki/Salvage
 **Version:** 0.1.0
 **License:** MIT © 2026 Utkarsh Karki
-**Status:** Pipeline complete + hardened + **Phase 4 production-grade React frontend**. Backend suite green (**117 tests across 13 files, all passing** — verified in-session) + frontend component suite green (**6 tests across 2 files**, Vitest + React Testing Library).
+**Status:** Pipeline complete + hardened + **Phase 4 production-grade React frontend** + **Phase 5 statistical rigor & structural proof** (multi-seed robustness, counterfactual baseline, tamper-evident audit chain, LLM-isolation proof). Backend suite green (**149 tests across 18 files, all passing** — verified in-session) + frontend component suite green (**6 tests across 2 files**, Vitest + React Testing Library).
 
 > This document is the authoritative, file-by-file engineering reference for the Reclaim codebase.
 > It does not summarize — it enumerates every directory, file, class, function, schema, and
@@ -19,10 +19,14 @@ subscriptions.** When a customer's card-failure webhook fires, Reclaim walks the
 and stopping rules *dispose*. Every decision is validated with Pydantic, logged to an append-only
 audit trail, and executed **idempotently** so a payment is never double-charged. Phase 3 added an
 **adversarial-resilience test suite**, real concurrency/crash hardening, and a set of genuine
-differentiators so it clears comparable public submissions in this track. Phase 4 (the current state
-of this document) added a **production-grade React SPA** (`frontend/`) plus a **parallel `/api/v1/*`
+differentiators so it clears comparable public submissions in this track. Phase 4 added a
+**production-grade React SPA** (`frontend/`) plus a **parallel `/api/v1/*`
 JSON namespace** (`api_v1.py`), so the same, already-tested pipeline now exposes both a merchant/
-operator UI and a machine-readable API surface.
+operator UI and a machine-readable API surface. Phase 5 (the current state of this document) added
+**statistical rigor & structural proof**: multi-seed robustness reporting, a counterfactual baseline
+comparison against two naive strategies, a tamper-evident hash-chained audit log, an explicit
+precision principle in the docs, and a structural test proving the LLM cannot reach money-moving
+code.
 
 It was built for the **Razorpay AI Buildathon — Track 3 (AI agent for revenue recovery)**.
 
@@ -72,12 +76,12 @@ are deliberately halted or escalated to a human. This yields three hard guarante
   resolve the case through the manual- override control plane.
 
 **Note on documentation drift:** earlier drafts of this file cited "68 tests / 7 files" (itself a
-correction of the older "63 tests / 6 files"), then "99 tests / 12 files". This version has been
-rewritten against the current, verified state: **117 backend tests across 13 files** plus **6
-frontend component tests across 2 files** (`Vitest`), matching `PROGRESS.md`. (The human-facing
-`README.md` still states 99 — it lags the Phase 4 additions; `PROGRESS.md` is the live authority and
-is what this document tracks.) The per-file counts and module inventory below reflect the current
-repository.
+correction of the older "63 tests / 6 files"), then "99 tests / 12 files", then "117 tests / 13
+files". This version has been rewritten against the current, verified state: **149 backend tests
+across 18 files** plus **6 frontend component tests across 2 files** (`Vitest`), matching
+`PROGRESS.md`. (The human-facing `README.md` still states 99 in spots — it lags the Phase 4/5
+additions; `PROGRESS.md` is the live authority and is what this document tracks.) The per-file
+counts and module inventory below reflect the current repository.
 
 ---
 
@@ -131,6 +135,15 @@ live in `package-lock.json`.
 | `prettier` | `^3.3.3` | Formatting |
 | `@vitejs/plugin-react`, `postcss`, `autoprefixer`, `jsdom`, `@types/*` | — | Build + test toolchain |
 
+### Console entrypoints (Phase 5 footer, `[project.scripts]` in `pyproject.toml`)
+All four CLIs are also invocable as `python -m reclaim.*`; the scripts are thin wrappers:
+| Script | Entry function | What it runs |
+|--------|----------------|--------------|
+| `reclaim-batch` | `reclaim.batch:main` | The synthetic-batch demo (60 new cases) |
+| `reclaim-robustness` | `reclaim.robustness:main` | Multi-seed robustness suite (default 100 seeds) |
+| `reclaim-baseline` | `reclaim.baseline:main` | Counterfactual baseline comparison |
+| `reclaim-verify-audit-chain` | `reclaim.verify_audit_chain:main` | Tamper-evidence audit-chain walk |
+
 ### Technology role map
 | Layer | Technology used |
 |-------|-----------------|
@@ -143,7 +156,8 @@ live in `package-lock.json`.
 | Templating (legacy dashboard / status / rules / simulator renders) | Jinja2 (declared; pages currently hand-build HTML) |
 | **JSON API namespace (Phase 4)** | FastAPI `APIRouter` mounted at `/api/v1/*` below the **CORS middleware** — thin wrappers over the same tested logic |
 | **React SPA (Phase 4)** | Vite + React 18 + TypeScript (strict) + Tailwind CSS + TanStack Query + React Router (`frontend/`) |
-| Testing / lint / typing | pytest (incl. thread-based adversarial suite), Ruff, mypy (strict); frontend: Vitest + React Testing Library |
+| **Statistical rigor (Phase 5)** | `robustness.py` (multi-seed suite), `baseline.py` + `retry_simulator.py` (counterfactual comparison), `audit_chain.py` + `verify_audit_chain.py` (SHA-256 hash-chained audit log) |
+| Testing / lint / typing | pytest (incl. thread-based adversarial suite), Ruff, mypy (strict); frontend: Vitest + React Testing Library; `test_llm_isolation.py` (AST-based structural proof) |
 
 ### Runtime modes (env-gated, safe by default)
 - `LLM_MODE=offline` → deterministic rule shim (hermetic tests & demos, no network).
@@ -186,6 +200,7 @@ Salvage/
 ├── .env.example                     # env template with placeholders (committed)
 ├── .gitignore                       # tailored ignore rules (kept from the project)
 ├── CHANGELOG_SUBMISSION.md          # dated, phase-level log of major changes
+├── baseline-analysis.html           # Phase 5 counterfactual comparison write-up (stands alone)
 ├── DECISIONS.md                     # running log of architecture decisions + why
 ├── LICENSE                          # MIT license text
 ├── PROGRESS.md                      # living build-progress journal
@@ -204,26 +219,31 @@ Salvage/
 │       ├── api.py                   # FastAPI app: webhook + HTML surfaces + CORS + mounts /api/v1
 │       ├── api_v1.py                # Phase 4 JSON namespace (/api/v1/*) — thin wrappers (A1–A7)
 │       ├── api_views.py             # shared derived views (simulator batch + customer status)
-│       ├── audit.py                 # append-only audit-log writer
-│       ├── batch.py                 # `python -m reclaim.batch` CLI entrypoint
+│       ├── audit.py                 # append-only audit-log writer + finalize_audit_chain (Phase 5)
+│       ├── audit_chain.py           # Phase 5 hash-chain canonicalization + chain_rows
+│       ├── batch.py                 # `python -m reclaim.batch` CLI entrypoint (+chain finalize)
+│       ├── baseline.py              # Phase 5 counterfactual baseline comparison (3 strategies)
 │       ├── celery_app.py            # Celery app + broker config (Upstash TLS / eager / beat)
 │       ├── config.py                # pydantic-settings env-driven Settings
-│       ├── db.py                    # SQLAlchemy 2 persistence layer + ORM tables + WAL
+│       ├── db.py                    # SQLAlchemy 2 persistence layer + ORM tables + WAL (+hash cols)
 │       ├── dispatcher.py            # webhook -> pipeline handoff (eager / celery)
 │       ├── email.py                 # email stub (single seam for a real provider)
 │       ├── llm_client.py            # offline shim / online Ollama wrapper + triage + provenance
 │       ├── manual.py                # human-in-the-loop override actions (control plane)
-│       ├── metrics.py               # batch metrics from audit trail + case states
+│       ├── metrics.py               # batch metrics from audit trail + case states (+precision docs)
 │       ├── models.py                # Pydantic v2 schemas for every boundary
 │       ├── pipeline.py              # run_case / run_batch orchestrator + concurrency
 │       ├── razorpay_client.py       # stub/live client (retry + subscription + settlement)
 │       ├── repo.py                  # read/update helpers (incl. query-layer list_cases)
+│       ├── retry_simulator.py       # Phase 5 shared retry-success model by decline code
+│       ├── robustness.py            # Phase 5 multi-seed robustness suite runner
 │       ├── state_machine.py         # guarded transition table + lifecycle machine
 │       ├── stopping_rules.py        # declarative policy-as-code R1–R7
 │       ├── sweep.py                 # stale-ACTING-lock reconciliation (crash recovery)
 │       ├── synthetic.py             # seeded synthetic webhook batch generator
 │       ├── tasks.py                 # Celery task entrypoints (incl. periodic sweep)
 │       ├── verify.py                # verification-only Subscriptions/Settlements lookups
+│       ├── verify_audit_chain.py    # Phase 5 audit-chain tamper-evidence walk (CLI)
 │       └── webhook.py               # signature verify, parse, dedupe
 ├── frontend/                        # Phase 4 — React SPA (Vite + TS strict + Tailwind + React Query)
 │   ├── README.md                    # frontend docs: setup, CORS caveat, testing trade-offs
@@ -262,39 +282,49 @@ Salvage/
 └── tests/
     ├── conftest.py                  # hermetic fixtures (settings/db, no .env)
     ├── test_api_v1.py               # 18 tests — Phase 4 HTTP-layer JSON API surface
+    ├── test_audit_chain.py          # 11 tests — Phase 5 hash-chain tamper-evidence
+    ├── test_baseline.py             # 10 tests — Phase 5 counterfactual strategies
+    ├── test_llm_isolation.py        # 3 tests — Phase 5 structural LLM isolation (AST)
     ├── test_manual.py               # 5 tests — human override actions
     ├── test_metrics.py              # 5 tests — metric counter independence
     ├── test_models.py               # 9 tests — Pydantic boundary validation
     ├── test_pipeline.py             # 9 tests — end-to-end fallback/idempotency/state
+    ├── test_robustness.py           # 7 tests — Phase 5 multi-seed distribution
     ├── test_simulator.py            # 4 tests — rule-sensitivity simulator
     ├── test_state_machine.py        # 14 tests — transition-table legality + manual edges
     ├── test_stopping_rules.py       # 20 tests — every R1–R7 override (policy-as-code)
     ├── test_synthetic.py            # 9 tests — generator invariants
     ├── test_webhook.py              # 13 tests — signature, parse, dedupe
-    └── adversarial/                 # Failure Injection & Resilience suite (11 tests)
+    └── adversarial/                 # Failure Injection & Resilience suite (12 tests)
         ├── __init__.py
+        ├── test_audit_chain_concurrency.py  # 1 — Phase 5 race-free chain finalize
         ├── test_concurrency.py      # 3 — duplicate webhooks + concurrent read/write
         ├── test_llm_adversarial.py  # 4 — injection/malformed triage + provenance
         └── test_sweep.py            # 4 — crash recovery + network-drop idempotency
 
 # Untracked tool caches (gitignored): .mypy_cache/, .pytest_cache/, .ruff_cache/
 # Frontend runtime/build artifacts (gitignored by frontend/.gitignore): node_modules/, dist/
+# Local DB backup snapshots (gitignored): .db-backup-*/
 ```
 
 ### Directory & key file roles
 - **`src/reclaim/`** — the entire application, packaged with `setuptools` under
-  `[tool.setuptools.packages.find] where = ["src"]`. This is a **src-layout** package (**26
-  modules** — Phases 1–4).
+  `[tool.setuptools.packages.find] where = ["src"]`. This is a **src-layout** package (**31
+  modules** — Phases 1–5).
 - **`frontend/`** — a **separate Node/TypeScript package** (not part of the Python build): the
   Phase 4 React SPA (Vite + TS strict + Tailwind + TanStack Query). `package-lock.json` is
   committed; `node_modules/` and `dist/` are gitignored by `frontend/.gitignore`.
-- **`tests/`** — the full pytest suite (**13 files, 117 tests**), hermetic by construction, with a
-  dedicated `tests/adversarial/` category for failure-injection & resilience and a Phase 4
-  `test_api_v1.py` covering the JSON API surface. The separate `frontend/` component suite adds
-  **6 tests across 2 files** (Vitest).
-- **Root config/docs** — `pyproject.toml` (Python build + tooling), `.env.example` (env shape),
-  `README.md`, `PROGRESS.md`, `DECISIONS.md`, `CHANGELOG_SUBMISSION.md`, `tasks.md`, `LICENSE`,
-  `.gitignore`, plus `scripts/dev.sh` / `dev.ps1` (one-command dev servers).
+- **`tests/`** — the full pytest suite (**18 files, 149 tests**), hermetic by construction, with a
+  dedicated `tests/adversarial/` category (now **12 failure-injection & resilience tests**, incl.
+  the Phase 5 race-free audit-chain finalize regression), the Phase 4 `test_api_v1.py` covering the
+  JSON API surface, and the Phase 5 `test_audit_chain` / `test_baseline` / `test_robustness` /
+  `test_llm_isolation` files. The separate `frontend/` component suite adds **6 tests across 2
+  files** (Vitest).
+- **Root config/docs** — `pyproject.toml` (Python build + tooling + the four Phase 5 console
+  scripts), `.env.example` (env shape), `README.md`, `PROGRESS.md`, `DECISIONS.md`,
+  `CHANGELOG_SUBMISSION.md`, `tasks.md`, `LICENSE`, `.gitignore` (+`.db-backup-*/` ignore rule),
+  `baseline-analysis.html` (Phase 5 counterfactual write-up), plus `scripts/dev.sh` / `dev.ps1`
+  (one-command dev servers).
 
 ---
 
@@ -570,10 +600,15 @@ This section goes file-by-file through **every** module in `src/reclaim/`.
     `failure_reason_raw` (512), `amount` (Float), `attempt_number` (Integer), `customer_tier`
     (32), `payment_history` (JSON, default list), `state` (32, index), `created_at`
     (DateTime timezone), `last_attempt_at` (DateTime, nullable).
-- **`AuditLogRow`** (`__tablename__ = "audit_log"`) — **append-only** by contract:
+- **`AuditLogRow`** (`__tablename__ = "audit_log"`) — **append-only** by contract, **hash-chained
+  for tamper-detection** (Phase 5):
   - `id` PK, `case_id` (255, index), `stage` (64), `agent_reasoning` (4096), `input_state` (JSON),
     `decision` (255), `action_taken` (255, nullable), `outcome` (255), `fallback_triggered`
-    (Boolean), `timestamp` (DateTime timezone).
+    (Boolean), `timestamp` (DateTime timezone), **`prev_hash`** (String 64, default `""` — the
+    previous entry's SHA-256 hash), **`entry_hash`** (String 64, default `""` — this entry's hash).
+    The hash columns are derived **post-write** by `audit.finalize_audit_chain` in one sequential
+    pass (never at write time — see `audit.py`); an unfinalized log (empty hashes) fails
+    `verify_audit_chain`.
 - **`ExecutedActionRow`** (`__tablename__ = "executed_actions"`) — the **idempotency ledger**:
   - `id` PK, `case_id` (255, index), `attempt_number` (Integer), `action` (64),
     `idempotency_key` (255, **unique**), `executed_at` (DateTime timezone).
@@ -773,12 +808,22 @@ This section goes file-by-file through **every** module in `src/reclaim/`.
 
 ---
 
-### 4.18 `src/reclaim/audit.py` — Append-only audit writer
+### 4.18 `src/reclaim/audit.py` — Append-only audit writer (+ Phase 5 hash-chain finalize)
 - **Responsibility:** One immutable row per stage transition. Insert-only by contract — never
-  updates or deletes.
+  updates or deletes. **Phase 5 makes the log tamper-evident** by deriving a SHA-256 hash chain
+  across every row (see `audit_chain.py` / `verify_audit_chain.py`).
 - **`write_audit(db, entry)`** — persists an `AuditLogRow`. **Never raises**: an audit-write
   failure must not crash the money flow it documents, so it's logged and swallowed (the case
-  proceeds regardless).
+  proceeds regardless). **Deliberately does not compute hash linkage at write time** — computing
+  "the most recent row by id" then inserting is a read-then-write sequence that races under the
+  batch's concurrent writers (two writes can both read the same stale latest row → a forked chain).
+  Instead, chain columns are left at their defaults and derived post-hoc.
+- **`finalize_audit_chain(db)`** → `int` — recomputes the full hash chain in **one sequential pass**
+  over rows ordered by autoincrement `id`, deriving each row's `prev_hash` / `entry_hash` from the
+  *already-committed* predecessor. Single-writer by construction: call it once **after** the
+  concurrent write phase (e.g. after `run_batch` in `batch.py` / `baseline.py`), never from the
+  concurrent writers. Idempotent and deterministic — rerunning over unchanged content yields the
+  same hashes, so later content tampering is still caught. Returns the number of rows chained.
 
 ---
 
@@ -839,7 +884,12 @@ This section goes file-by-file through **every** module in `src/reclaim/`.
 - **Responsibility:** Computes batch-level metrics from the audit trail + case states. No guesses.
 - **`_EXECUTED_ACTIONS`** — `{retry_now, retry_scheduled, request_payment_method_update,
   escalate_human}` required for a stub action to count (excludes `STOP` — no side effect).
-- **`compute_metrics(db, settings)`** — one scan over all cases + their audit trails, returns:
+- **`compute_metrics(db, settings)`** — one scan over all cases + their audit trails.
+  **Phase 5 (precision principle):** the function's docstring and every field carry explicit
+  "what this proves vs. what needs external confirmation" guidance — e.g. `recovered_amount` proves
+  a successful gateway call was made and logged, **not** that settlement confirmed (that
+  corroboration comes from the opt-in `verify.py` settlement lookup); the three counters are
+  documented as availability vs. safety vs. environment. Returns:
   - `total_cases`, `state_distribution`, `amount_at_risk`, `recovered_cases`,
     `recovered_amount`, `recovery_rate` (fraction), `cause_breakdown`.
   - **Three non-conflated counters:**
@@ -895,8 +945,10 @@ This section goes file-by-file through **every** module in `src/reclaim/`.
   delivery, returning `(new_ids, dupes, rejected)` — shared by the batch CLI and the `/simulator`
   so both exercise the exact same webhook boundary.
 - **`main()`** — generates the batch (seed=42, real webhook secret), ingests with
-  verify/parse/dedupe counting (new / duplicates / rejected), runs `run_batch(new_ids)`,
-  computes + prints metrics, returns 0.
+  verify/parse/dedupe counting (new / duplicates / rejected), runs `run_batch(new_ids)`, then calls
+  **`finalize_audit_chain(db)`** (Phase 5: computes the hash chain in one sequential pass *after*
+  the concurrent writes finish — see `audit.py`), computes + prints metrics, returns 0.
+- **Console script** — `reclaim-batch` (`pyproject.toml` `[project.scripts]`) wraps `main()`.
 - **`_print_report(metrics, db, new_ids)`** — pretty-prints the report and one graceful example
   case's audit trail (with a ` <-- LLM failure or stopping-rule override` tag).
 - **`_resolved_without_retry(db, case_id)`** — True when the case hit a deliberate stop or
@@ -1028,8 +1080,106 @@ This section goes file-by-file through **every** module in `src/reclaim/`.
 
 ---
 
-### 4.27 Test files (`tests/` + `frontend/`)
-Here the suite is listed per file with exact test counts. **Backend: 117 tests across 13 files.**
+### 4.27 `src/reclaim/audit_chain.py` — Shared hash-chain utilities (Phase 5 tamper-evidence)
+- **Responsibility:** The single source of canonical serialization + hash computation shared by the
+  write path (`audit.py` finalize) and the verification path (`verify_audit_chain.py`) so both
+  compute **identical** hashes. No DB access — purely functional.
+- **`GENESIS_HASH`** — `"0" * 64` (the predecessor hash of the first entry in the chain).
+- **`_canonical_entry_dict(row_or_dict)`** — builds a canonical dict of every content field
+  (all columns **except** the hash columns) that is byte-identical whether the input is an ORM row
+  (after the JSON round-trip through SQLite) or a plain dict. Timestamps are normalized to
+  `%Y-%m-%dT%H:%M:%SZ` via `strftime` (drops microseconds and ignores tzinfo so the aware write path
+  and the naive SQLite-readback verify path agree); `input_state` is normalized to a dict.
+- **`compute_entry_hash(prev_hash, entry_dict)`** — `sha256(prev_hash + canonical_json_sorted)` →
+  64-char hex. `canonical_json` = `json.dumps(sort_keys=True, separators=(",", ":"))`.
+- **`chain_rows(entries)`** — computes the full hash chain for an ordered list in **one pass**,
+  returning parallel `(id, prev_hash, entry_hash)` tuples. Each link derives from the *previous
+  entry's computed hash*, never from a concurrent read of "the most recent row" — race-free by
+  construction, so the audit chain can never fork.
+
+### 4.28 `src/reclaim/verify_audit_chain.py` — Audit-chain verification walk (Phase 5 CLI)
+- **Responsibility:** Walks the entire audit log in order and confirms every entry's
+  `entry_hash`/`prev_hash` matches a fresh recomputation — tamper-evidence for auditors. Pure
+  read-only: recomputes + compares, never writes.
+- **`@dataclass(frozen=True) AuditChainVerificationResult`** — `is_valid`, `total_entries`,
+  `first_broken_entry_id`, `first_broken_entry_reason`.
+- **`verify_audit_chain(session)`** — queries all `AuditLogRow` ordered by `id` (insertion order),
+  walks the chain with the shared canonicalization; an empty log verifies as valid; reports the
+  **first** break (either an `entry_hash` mismatch or a `prev_hash` mismatch) with the expected vs.
+  stored values.
+- **CLI** — `python -m reclaim.verify_audit_chain` (and console script `reclaim-verify-audit-chain`):
+  reconfigures stdout to UTF-8 (the `✓`/`✗` glyphs crash a cp1252 Windows console otherwise), prints
+  `✓ Chain is valid (N entries)` or the broken-link report, exits 0/1.
+
+### 4.29 `src/reclaim/retry_simulator.py` — Shared retry-success simulation model (Phase 5)
+- **Responsibility:** The single source of truth for "does a retry on this decline code actually
+  succeed?" — the same model the counterfactual baseline (and, by intent, the stub pipeline) face,
+  so strategies differ only in *which cases they retry* (stopping rules), not in the odds of success.
+- **`RETRY_SUCCESS_RATE: dict[str, float]`** — realistic per-decline-code success probability
+  (informed by industry retry data): `R01`/`R02` (insufficient funds) 0.45, `54`/`F14` (card
+  expired) 0.05, `91`/`Z06` (bank timeout) 0.60, `05`/`N7` (do not honor) 0.35, `R0`/`PM`
+  (mandate revoked) 0.00, `255`/`C6` (unknown) 0.25; unknown codes default to 0.25.
+- **`retry_would_succeed(failure_reason, rng=None)`** — samples `rng.random() < rate`; seeded
+  `random.Random` makes every counterfactual reproducible.
+
+### 4.30 `src/reclaim/robustness.py` — Multi-seed robustness suite (Phase 5)
+- **Responsibility:** Runs the batch across N **independently seeded** synthetic batches and
+  reports the *distribution* of recovery outcomes — statistical rigor instead of a single lucky
+  (or unlucky) seed.
+- **`@dataclass(frozen=True) RobustnessResult`** — `seed`, `recovery_rate`, `recovered_amount`,
+  `amount_at_risk`, `recovered_cases`, `total_cases`.
+- **`@dataclass(frozen=True) RobustnessReport`** — `runs`, plus distribution stats for recovery rate
+  and recovered amount (`median`, `p5`, `p95`, `stddev`), `headline_batch_seed=42`, and
+  `headline_batch_percentile` (fraction of runs below the default seed-42 batch's recovery rate).
+- **`run_robustness_suite(num_seeds=100, settings=None, db=None)`** — for each seed in
+  `range(num_seeds)`: `generate_batch(seed)` → ingest valid deliveries → `run_batch` →
+  `compute_metrics`; then computes median/P5/P95/stddev and the seed-42 headline percentile.
+  Reuses the existing synthetic generator + pipeline — no duplicated logic.
+- **CLI** — `python -m reclaim.robustness [num_seeds]` (console script `reclaim-robustness`):
+  prints the recovery-rate and recovered-amount distributions and an **honest headline disclosure**
+  of where the default batch falls (e.g. "below median") rather than omitting it.
+
+### 4.31 `src/reclaim/baseline.py` — Counterfactual baseline comparison (Phase 5)
+- **Responsibility:** Demonstrates the economic differentiator — compares the **real Reclaim
+  policy** against two **naive strategies** on the *same* seeded batch under a realistic
+  retry-success model, so the only policy difference is the stopping-rule layer.
+- **`@dataclass(frozen=True) StrategyResult`** — `name` (`do_nothing` | `retry_everything` |
+  `reclaim`), `gateway_calls`, `cases_succeeded` (the success rate — disambiguates "₹0 by not
+  calling" from "₹0 by calling and failing"), `gross_recovered`, `policy_blocked_value`,
+  `net_recovered`.
+- **`@dataclass(frozen=True) BaselineComparison`** — `seed` + the three `StrategyResult` rows.
+- **`ASSUMED_CHARGEBACK_RATE = 0.85`** — conservative documented assumption: retries that the real
+  policy would have blocked (R1–R7 stops/escalations) incur an 85% chargeback rate, so the naive
+  strategy's "net" is deliberately *not* flattering.
+- **Three strategies** (all share the realistic success model):
+  - `do_nothing` — 0 gateway calls, ₹0 recovered.
+  - `retry_everything` — one call per case, no stopping rules: gross = success-model amount on all
+    cases; **net** = gross − (85% × policy-blocked value), where policy-blocked value = the sum of
+    amounts the real policy would have stopped/escalated.
+  - `reclaim` — the **real** pipeline runs first (via `run_batch`); its retry-eligible cases are
+    identified from the audit trail (no `decide` `OVERRIDE` **and** an `act`/`retry_now`), then
+    outcomes are recomputed with the same seeded success model. The probabilistic result (e.g. seed
+    42: ₹24,089 net) is honestly distinct from the stub-mode batch report (₹39,776 deterministic).
+- **`_build_fresh_db(settings)`** — the comparison **always runs on a fresh, file-backed temp SQLite
+  DB** (isolated from, and never mutating, the real DB). This fixes the original bug where re-ingesting
+  the seeded batch into the real `reclaim.db` deduped every event (UNIQUE `event_id`) → 0 calls / ₹0.
+  File-backed (not in-memory) because `run_batch` fans out across threads.
+- **`run_baseline_comparison(seed=42, settings=None, db=None)`** — generates the batch, ingests,
+  runs the real pipeline, finalizes the audit chain, computes all three strategy rows, returns
+  `BaselineComparison`. (The `db` argument is accepted for signature stability but deliberately not
+  used — a counterfactual cannot be trusted against a polluted DB.)
+- **CLI** — `python -m reclaim.baseline [seed]` (console script `reclaim-baseline`): prints the
+  strategy table (Gateway Calls / Cases Succeeded / Gross Recovered / Policy-Blocked Value / Net
+  Recovered) plus comparative analysis (gateway-call reduction %, net-recovery advantage,
+  policy-blocked value insight). Reconfigures stdout to UTF-8 so `₹` never crashes a cp1252 console.
+  Live seed-42 result (verified in-session): `retry_everything` 60 calls / ₹55,382 gross /
+  −₹61,895.90 net (85% chargeback on ₹137,974 blocked) vs `reclaim` ₹24,089 net — **60%** fewer
+  gateway calls.
+
+---
+
+### 4.32 Test files (`tests/` + `frontend/`)
+Here the suite is listed per file with exact test counts. **Backend: 149 tests across 18 files.**
 **Frontend (Phase 4): 6 component tests across 2 Vitest files** — see the `frontend/` note at the end.
 
 - **`conftest.py`** — hermetic fixtures: an autouse `_no_dotenv` clears the settings cache; a
@@ -1086,6 +1236,29 @@ Here the suite is listed per file with exact test counts. **Backend: 117 tests a
   parsing (valid/bad-JSON/missing-event-type/deterministic-id), event→case mapping
   (valid/unmappable), dedupe (duplicate is a no-op, and a replay never mutates an already-advanced
   case state).
+- **`test_audit_chain.py` (11 tests, Phase 5)** — hash-chain tamper-evidence:
+  `_canonical_entry_dict` handles ORM rows/dicts identically, `compute_entry_hash` is deterministic,
+  empty log verifies trivially, healthy chain verifies clean, mutating any field (or the prev link)
+  breaks verification from that point, multi-case chains chain correctly, an **unfinalized log
+  (empty hashes) is detected as invalid**, `finalize_audit_chain` is deterministic/idempotent, and
+  the dataclass shape.
+- **`test_baseline.py` (10 tests, Phase 5)** — counterfactual strategies: dataclass shapes,
+  `do_nothing` recovers ₹0, `retry_everything` makes one call per case, retry-eligible detection,
+  comparison smoke test, `retry_everything` makes more calls than `reclaim`, the chargeback-netting
+  math, the **[real-batch regression]** — running the comparison against a fully populated DB still
+  reports 60 calls / ₹>0 (fresh-DB isolation fix), and the CLI import.
+- **`test_llm_isolation.py` (3 tests, Phase 5)** — **structural proof** via `ast` parsing:
+  `llm_client.py` imports neither `razorpay_client.py` nor `act.py` directly, so the LLM module has
+  no code path to execute a money-moving action outside the reviewed pipeline → stopping-rules →
+  act flow; plus the import-graph verification and import-boundary checks.
+- **`test_robustness.py` (7 tests, Phase 5)** — multi-seed suite: dataclass shapes, the runner
+  produces N independent results across seeds, different seeds give (some) different outcomes,
+  distribution-stat math (median/p5/p95/stddev) is correct against a known small distribution, the
+  headline-batch percentile calculation, and the CLI import.
+- **`tests/adversarial/test_audit_chain_concurrency.py` (1 test, Phase 5 regression)** — writes via
+  the **real** `write_audit` path from 8 threads (the concurrent batch shape that once forked the
+  chain), then asserts the finalized chain verifies clean — locking in the race-free
+  `finalize_audit_chain` design.
 - **Frontend component tests (6 tests / 2 files, Vitest + React Testing Library)** — cover the
   logic-bearing components, not static display: `components/ManualActions.test.tsx` (4) — override
   buttons render, disable while pending, and surface the distinct 409 "already resolved" case vs a
@@ -1125,7 +1298,8 @@ Here the suite is listed per file with exact test counts. **Backend: 117 tests a
 | `last_attempt_at` | DateTime(tz) | nullable |
 
 **`audit_log`** (append-only; stage may be `ingest`/`diagnose`/`decide`/`act`/`manual_override`/
-`sweep`/`verify_*`; `input_state` may carry `llm_provenance`)
+`sweep`/`verify_*`; `input_state` may carry `llm_provenance`; **hash-chained for tamper-evidence
+(Phase 5)**)
 | Column | Type | Constraints |
 |--------|------|-------------|
 | `id` | Integer | PK |
@@ -1138,6 +1312,8 @@ Here the suite is listed per file with exact test counts. **Backend: 117 tests a
 | `outcome` | String(255) | |
 | `fallback_triggered` | Boolean | default False |
 | `timestamp` | DateTime(tz) | |
+| `prev_hash` | String(64) | default `""` — previous entry's SHA-256 hash |
+| `entry_hash` | String(64) | default `""` — this entry's hash; both derived by `finalize_audit_chain` |
 
 **`executed_actions`** (idempotency ledger)
 | Column | Type | Constraints |
@@ -1229,7 +1405,12 @@ On every Diagnose/Decide call the audit entry's `input_state["llm_provenance"]` 
    records.
 9. **Log:** each stage appends an immutable `AuditLogRow` (append-only), and the case row's `state`
    is updated at each transition. Terminal states are absorbing (except ESCALATED, re-openable only
-   via the manual-override control plane).
+   via the manual-override control plane). **Phase 5 (tamper-evidence):** after the concurrent
+   write phase completes, `audit.finalize_audit_chain` derives each row's `prev_hash`/`entry_hash`
+   in one sequential pass (compute-at-write would race and fork the chain); the batch CLI and
+   baseline do this after `run_batch`. `python -m reclaim.verify_audit_chain` (or the
+   `reclaim-verify-audit-chain` console script) then proves the log un-tampered — any content
+   mutation breaks the chain from that row onward.
 10. **Crash recovery (sweep):** if the process dies between DECIDED and a completed ACT, the case
     is left in `ACTING`. The periodic beat task `reclaim.tasks.sweep_stale_acting_task` (every
     5 min) finds stale `ACTING` cases past `STALE_LOCK_TIMEOUT_SECONDS` and reconciles them to
@@ -1245,7 +1426,11 @@ On every Diagnose/Decide call the audit entry's `input_state["llm_provenance"]` 
     `/resolve_human`, and `GET /api/v1/status/{case_id}` — each a thin wrapper over the same tested
     logic, consumed by the **React SPA** (`frontend/`): Case List, Case Detail (with override
     control plane), Rules, Simulator, and the plain-language Customer Status (routed outside the
-    app chrome).
+    app chrome). **Phase 5 adds four console surfaces** — `python -m reclaim.batch`
+    (`reclaim-batch`), `python -m reclaim.robustness [N]` (`reclaim-robustness`),
+    `python -m reclaim.baseline [seed]` (`reclaim-baseline`), and
+    `python -m reclaim.verify_audit_chain` (`reclaim-verify-audit-chain`) — the statistical-rigor
+    and tamper-evidence tooling, plus the `baseline-analysis.html` standalone write-up.
 
 ### 6.2 Metrics computation (read path)
 `metrics.compute_metrics` scans every case + its audit trail in a single pass, deriving:
@@ -1256,6 +1441,16 @@ On every Diagnose/Decide call the audit entry's `input_state["llm_provenance"]` 
 - **Recovery** — a case is "recovered" when `state == RESOLVED` and its last act outcome contains
   `retry_succeeded`; the amount is added to `recovered_amount`.
 - **`cases_resolved_without_retry`** = stopped + escalated (no retry action taken).
+
+**Precision principle (Phase 5):** every field is labeled for what it proves vs. what needs external
+confirmation — e.g. `recovered_amount` proves a gateway call was accepted (from the audit outcome),
+not that settlement confirmed. **Phase 5 analysis tools** layered on this read path:
+- `robustness.run_robustness_suite` — re-runs the whole batch over N seeds and reports the recovery
+  distribution (median / P5 / P95 / stddev) + where the seed-42 headline batch falls.
+- `baseline.run_baseline_comparison` — counterfactual table (do-nothing / retry-everything / real
+  Reclaim policy) under the shared realistic retry-success model with the documented 85% chargeback
+  assumption.
+- `verify_audit_chain.verify_audit_chain` — proves the audit log is un-tampered.
 
 ### 6.3 Reference demo output (from `python -m reclaim.batch`)
 ```
@@ -1347,7 +1542,30 @@ $env:RECLAIM_FRESH="1"; python -m reclaim.batch
 ```
 `RECLAIM_FRESH=1` uses a fresh per-run SQLite file so metrics always start clean.
 
-### 7.5 Run the API (Python backend)
+### 7.5 Phase 5 CLI tools — robustness, baseline comparison, audit-chain verification
+Four console scripts are declared in `pyproject.toml` `[project.scripts]` (each also runnable via
+`python -m reclaim.*`). They are deterministic and offline; each forces UTF-8 stdout so `₹`/`✓`
+never crash a cp1252 Windows console.
+
+```bash
+reclaim-batch                              # the standard seed-42 demo (as in 7.4)
+reclaim-robustness [num_seeds]             # multi-seed distribution (default 100)
+reclaim-baseline [seed]                    # counterfactual: do-nothing / retry-everything / reclaim
+reclaim-verify-audit-chain                 # proves the audit log is un-tampered (exit 0/1)
+```
+
+- **Robustness** — re-runs the batch over N independent seeds and prints the recovery-rate /
+  recovered-amount distribution (median, 5th & 95th percentile, stddev) and an **honest headline
+  disclosure** of where the seed-42 batch falls.
+- **Baseline** — prints the strategy table (Gateway Calls / Cases Succeeded / Gross / Policy-Blocked
+  Value / Net), with an always-fresh temp DB (never the real `reclaim.db`) and the documented 85%
+  chargeback assumption for policy-blocked retries. Live result: **reclaim ₹24,089 net vs
+  retry-everything ₹55,382 gross / −₹61,895.90 net; 60% fewer gateway calls.**
+- **Audit chain** — recomputes every `entry_hash`/`prev_hash` and verifies the log. A healthy log
+  prints `✓ Chain is valid (N entries)`; any tamper prints the first broken entry id + reason and
+  exits non-zero.
+
+### 7.6 Run the API (Python backend)
 ```bash
 uvicorn reclaim.api:app --reload
 # then visit (HTML/legacy surfaces):
@@ -1368,9 +1586,9 @@ uvicorn reclaim.api:app --reload
 #   http://127.0.0.1:8000/webhook/razorpay   (X-Razorpay-Signature + X-Razorpay-Event-Id headers)
 ```
 
-### 7.6 Run the React frontend (Phase 4 SPA)
+### 7.7 Run the React frontend (Phase 4 SPA)
 
-The SPA is a separate Node package under `frontend/`. Start the backend (7.5) and the Vite dev
+The SPA is a separate Node package under `frontend/`. Start the backend (7.6) and the Vite dev
 server together with a helper script, or run them in two terminals:
 
 ```bash
@@ -1390,17 +1608,19 @@ proxies `/api` → `:8000`, so no CORS occurs in development; the built app uses
 required (the backend refuses to boot without it) — run `python -m reclaim.batch` or POST webhooks
 to generate cases before exploring.
 
-### 7.7 Run the tests (backend + frontend)
+### 7.8 Run the tests (backend + frontend)
 ```bash
-pytest                         # full backend suite — 117 tests / 13 files, all passing (verified)
+pytest                         # full backend suite — 149 tests / 18 files, all passing (verified)
 pytest tests/test_api_v1.py    # Phase 4 JSON API HTTP-layer subset (18 tests)
-pytest tests/adversarial/      # failure-injection & resilience subset (11 tests)
+pytest tests/adversarial/      # failure-injection & resilience subset (12 tests)
+pytest tests/test_baseline.py tests/test_robustness.py tests/test_audit_chain.py \
+    tests/test_llm_isolation.py   # Phase 5 statistical-rigor & structural-proof subset (31 tests)
 
 cd frontend && npm test        # Phase 4 SPA component suite — 6 tests / 2 files (Vitest)
 npm run build                  # type-check + clean production bundle (dist/)
 ```
 
-### 7.8 Lint & type-check (backend + frontend)
+### 7.9 Lint & type-check (backend + frontend)
 ```bash
 ruff check src tests   # backend lint (E, F, I, UP, B, SIM, RUF; E501 ignored)
 mypy                   # backend strict type checking over the "reclaim" package
@@ -1410,7 +1630,7 @@ npm run typecheck                  # TypeScript strict
 npm run format                     # Prettier
 ```
 
-### 7.9 Live demo (optional)
+### 7.10 Live demo (optional)
 1. Set `LLM_MODE=online` + your Ollama URL/model, `ACT_MODE=live` + Razorpay test keys + confirm
    `RAZORPAY_RETRY_PATH` (and optionally `RAZORPAY_SUBSCRIPTION_PATH` /
    `RAZORPAY_SETTLEMENT_PATH`), and wire a real provider into `email.send_email_message`.
@@ -1444,7 +1664,10 @@ npm run format                     # Prettier
 - **Modules are single-purpose files** (one responsibility per module): `state_machine.py`,
   `stopping_rules.py`, `pipeline.py`, `act.py`, `webhook.py`, `sweep.py`, `verify.py`, `manual.py`.
   Phase 4 adds `api_views.py` (shared derived views) and `api_v1.py` (the JSON namespace) so the
-  HTML and JSON surfaces stay separate yet can't drift.
+  HTML and JSON surfaces stay separate yet can't drift. Phase 5 adds `audit_chain.py` (canonical
+  hash-chain serialization), `verify_audit_chain.py` (read-only tamper check), `robustness.py`
+  (multi-seed runner), `baseline.py` (counterfactual comparison), and `retry_simulator.py` (the
+  shared retry-success model) — each a CLI entrypoint plus a console script.
 - **Enums as `StrEnum`** with lowercase machine values (`"retry_now"`); the SPA mirrors these in
   `frontend/src/types.ts` as TS union types whose values are the contract.
 - **Dataclasses** (`frozen=True`) for value/result objects (`RuleOutcome`, `ActResult`,
@@ -1502,39 +1725,73 @@ npm run format                     # Prettier
   Python enums/shapes by hand (codegen deferred; the surface is small and the backend
   `test_api_v1.py` asserts the wire shapes, so drift surfaces there). Documented upgrade path:
   `openapi-typescript` if the API grows.
+- **Tamper-evident audit log / post-write chain (Phase 5)** — the audit log carries a SHA-256 hash
+  chain (`prev_hash` + `entry_hash` per row), but chain linkage is **not** computed at write time
+  (a read-then-write sequence that would fork under concurrency). It is derived by
+  `audit.finalize_audit_chain` in one **sequential** pass after the concurrent write phase; the
+  verifier is pure read-only and reports the first broken link. An unfinalized log fails
+  verification. Regression-tested under 8 real writer threads.
+- **Honest disclosure / precision principle (Phase 5)** — every metric is labeled for what it
+  proves vs. what needs external confirmation (`recovered_amount` = gateway call accepted, not
+  settlement confirmed); the robustness suite reports the default batch's **percentile** rather
+  than hiding it; the baseline uses a **conservative 85% chargeback** assumption so the naive
+  strategy's net is not flattering.
+- **Always-fresh counterfactual DB (Phase 5)** — `baseline.run_baseline_comparison` always runs on
+  a fresh, file-backed temp DB (never an already-populated real DB, whose `UNIQUE(event_id)` would
+  dedupe every seeded event to 0 calls). File-backed because `run_batch` crosses threads.
+- **Structural LLM-isolation proof (Phase 5)** — an `ast`-based test statically proves
+  `llm_client.py` does not import `razorpay_client.py` / `act.py`, guaranteeing no code path from
+  the LLM to a money-moving execution outside the reviewed pipeline → rules → act flow.
+- **Shared counterfactual simulation model (Phase 5)** — `retry_simulator.py` owns the
+  per-decline-code retry-success probabilities so every strategy (and any future consumer) faces the
+  same odds; strategies differ only in *which* cases they retry.
+- **Console scripts (Phase 5)** — the four CLIs are declared in `pyproject.toml` `[project.scripts]`
+  and each forces UTF-8 stdout (a cp1252 Windows console crashes on `₹`/`✓` otherwise).
 
 ### 8.6 Testing conventions
 - Hermetic by construction: fixtures ignore the real `.env`, use per-test SQLite files, and run in
   `offline` + `stub` + eager modes.
-- **117 backend tests across 13 files**, covering every domain boundary: webhook
+- **149 backend tests across 18 files**, covering every domain boundary: webhook
   signature/parse/dedupe, state-machine legality (incl. manual edges), all seven stopping rules
   (incl. R7 floor + policy-as-code introspection), Pydantic invariants, synthetic generator
   invariants, end-to-end fallback/idempotency/state flows, metric-counter independence, the rule
   simulator, the manual override control plane, a **Phase 4 HTTP-layer suite for `/api/v1/*`**
   (status codes + wire shapes, overriding the api_v1 deps so the app lifespan never touches the
-  real DB), and a dedicated **adversarial-resilience** category (real threads + crash +
-  network-drop + injection-triage).
+  real DB), a dedicated **adversarial-resilience** category (real threads + crash + network-drop +
+  injection-triage), and the **Phase 5 statistical-rigor & structural-proof additions** — 31 tests
+  across `test_audit_chain.py` / `test_baseline.py` / `test_robustness.py` / `test_llm_isolation.py`
+  plus a 1-test concurrency regression in `adversarial/` (117 Phase 1–4 + 32 Phase 5 = **149**).
 - **Frontend: 6 component tests across 2 files** (`frontend/`), Vitest + React Testing Library
   (jsdom), covering the logic-bearing components — the manual-override flow (buttons, pending
   disable, distinct 409 vs generic) and the simulator form (payload shape, comparison render).
   Static display-only components are not exhaustively covered; E2E is deliberately deferred
   (documented in `frontend/README.md`).
 - **Layer separation:** the Phase 4 HTTP tests prove the JSON boundary, not business logic already
-  proven by the unit tests — no duplicated coverage.
+  proven by the unit tests — no duplicated coverage; the Phase 5 tests likewise prove the new
+  modules' own logic (chain integrity, counterfactual math, distribution stats, structural
+  isolation) without reaching into Phase 1–4 behavior.
 
 ### 8.7 Documentation & repository conventions
-- `README.md` — primary human-facing documentation: trust-boundary diagram, "LLM proposes / code
-  disposes" + R1–R7, three non-conflated metrics with a why-it-matters note, Failure Injection &
+- `README.md` — primary human-facing documentation: trust-boundary diagram (with a Phase 5 caption
+  noting the structural LLM-isolation guarantee is *test-verified* via the import graph), "LLM
+  proposes / code disposes" + R1–R7, three non-conflated metrics, a **Phase 5 "Precision principle"
+  section** (what each metric proves vs. what needs external confirmation), Failure Injection &
   Resilience, verification-only integrations, provenance, security, distributed-idempotency design
-  note, and "What Broke and How We Fixed It". (Note: its test-count references still read 99 —
-  it predates Phase 4; `PROGRESS.md` is the live authority.)
+  note, and "What Broke and How We Fixed It". (Note: some test-count references still read 99 —
+  they lag Phase 4/5; `PROGRESS.md` is the live authority.)
+- `baseline-analysis.html` — a standalone, self-styled Phase 5 write-up that documents the
+  counterfactual comparison: why the old 100%-success model was unrealistic, the per-decline-code
+  success rates, the 85% chargeback assumption, and the resulting strategy table.
 - `PROGRESS.md` — a living build-progress journal (done / decisions + why / in progress / next)
   maintained at session start and after each step (per the project's documented convention).
+  Phase 5 (including the post-submission real-batch bug fixes and the 145→149 count correction) is
+  logged here.
 - `DECISIONS.md` — a running log of every non-trivial architecture decision and why (SQLAlchemy,
   Upstash, offline by default, each stopping rule's threshold + rationale, WAL, economic floor,
-  policy-as-code, provenance, sweep, verification-only reads, the metrics split).
+  policy-as-code, provenance, sweep, verification-only reads, the metrics split — and Phase 5's
+  post-write chain-finalize over compute-at-write, and the always-fresh baseline DB).
 - `CHANGELOG_SUBMISSION.md` — a dated, phase-level log (Phase 1 core pipeline, Phase 2 UI + real
-  API deepening, Phase 3 hardening + differentiation), distinct from raw git noise. (Phase 4
+  API deepening, Phase 3 hardening + differentiation), distinct from raw git noise. (Phase 4/5
   entries can be found in `PROGRESS.md`.)
 - `frontend/README.md` — SPA-specific docs: stack, page table, two-terminal + `scripts/dev.*`
   setup, the **CORS caveat (local-demo default only)**, testing rationale, and the codegen-vs-
@@ -1550,28 +1807,32 @@ npm run format                     # Prettier
 ## Appendix — File inventory summary
 | Path | Role |
 |------|------|
-| `src/reclaim/` | Entire application (26 modules) |
-| `tests/` | 117 backend tests across 13 files (incl. `tests/adversarial/`, 11 tests, and `test_api_v1.py`, 18 tests) |
+| `src/reclaim/` | Entire application (31 modules) |
+| `tests/` | 149 backend tests across 18 files (incl. `tests/adversarial/`, 12 tests, `test_api_v1.py`, 18 tests, and the Phase 5 rigor/isolation files) |
 | `frontend/` | Phase 4 React SPA — 6 component tests across 2 Vitest files |
 | `scripts/` | `dev.sh` / `dev.ps1` — launch backend + Vite together |
-| `pyproject.toml` | Python build + deps + pytest/ruff/mypy config |
+| `pyproject.toml` | Python build + deps + pytest/ruff/mypy config + the 4 Phase 5 `[project.scripts]` |
 | `frontend/package.json` (+ lock) | Node SPA deps + scripts |
+| `baseline-analysis.html` | Phase 5 counterfactual-comparison write-up |
 | `.env.example` | Env template (placeholders) |
-| `README.md` / `PROGRESS.md` | Docs + build journal |
+| `README.md` / `PROGRESS.md` | Docs + build journal (Phase 5 logged in PROGRESS) |
 | `DECISIONS.md` / `CHANGELOG_SUBMISSION.md` / `tasks.md` | Submission artifacts (decisions / phase log / scope map) |
 | `LICENSE` | MIT |
-| `.gitignore` (+ `frontend/.gitignore`) | Tailored ignore rules (root + SPA) |
+| `.gitignore` (+ `frontend/.gitignore`) | Tailored ignore rules (root + SPA, incl. `.db-backup-*/`) |
 | `reclaim.db` | Dev SQLite database (runtime artifact, gitignored) |
 
-**Module inventory (`src/reclaim/`, 26 files):**
-`__init__`, `act`, `api`, `api_v1`, `api_views`, `audit`, `batch`, `celery_app`, `config`, `db`,
-`dispatcher`, `email`, `llm_client`, `manual`, `metrics`, `models`, `pipeline`, `razorpay_client`,
-`repo`, `state_machine`, `stopping_rules`, `sweep`, `synthetic`, `tasks`, `verify`, `webhook`.
+**Module inventory (`src/reclaim/`, 31 files):**
+`__init__`, `act`, `api`, `api_v1`, `api_views`, `audit`, `audit_chain`, `batch`, `baseline`,
+`celery_app`, `config`, `db`, `dispatcher`, `email`, `llm_client`, `manual`, `metrics`, `models`,
+`pipeline`, `razorpay_client`, `repo`, `retry_simulator`, `robustness`, `state_machine`,
+`stopping_rules`, `sweep`, `synthetic`, `tasks`, `verify`, `verify_audit_chain`, `webhook`.
 
-**Backend test inventory (`tests/`, 117 tests / 13 files):**
-`test_api_v1` (18), `test_manual` (5), `test_metrics` (5), `test_models` (9), `test_pipeline` (9),
+**Backend test inventory (`tests/`, 149 tests / 18 files):**
+`test_api_v1` (18), `test_audit_chain` (11), `test_baseline` (10), `test_llm_isolation` (3),
+`test_manual` (5), `test_metrics` (5), `test_models` (9), `test_pipeline` (9), `test_robustness` (7),
 `test_simulator` (4), `test_state_machine` (14), `test_stopping_rules` (20), `test_synthetic` (9),
-`test_webhook` (13), `adversarial/test_concurrency` (3), `adversarial/test_llm_adversarial` (4),
+`test_webhook` (13), `adversarial/test_audit_chain_concurrency` (1),
+`adversarial/test_concurrency` (3), `adversarial/test_llm_adversarial` (4),
 `adversarial/test_sweep` (4), plus `conftest` fixtures.
 
 **Frontend test inventory (`frontend/`, 6 tests / 2 files):**
@@ -1579,7 +1840,8 @@ npm run format                     # Prettier
 
 ---
 
-*Documented and verified in-session on 2026-09-01. Backend suite: **117 passed** (13 files) +
-frontend suite: **6 passed** (2 Vitest files). This is a Phase-4 refresh of the earlier "99 tests /
-12 files" inventory (itself a refresh of "68 tests / 7 files"); all counts, modules, routes, config
-fields, frontend files, and tests were re-verified against the current source before writing.*
+*Documented and verified in-session on 2026-09-02. Backend suite: **149 passed** (18 files) +
+frontend suite: **6 passed** (2 Vitest files). This is a Phase-5 refresh of the earlier
+"117 tests / 13 files" inventory (itself a refresh of "99 tests / 12 files" and "68 tests /
+7 files"); all counts, modules, routes, config fields, frontend files, and tests were re-verified
+against the current source before writing.*
