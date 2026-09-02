@@ -8,7 +8,7 @@
 
 ![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.111%2B-009688?style=flat-square&logo=fastapi&logoColor=white)
-![Tests](https://img.shields.io/badge/Tests-155%20passing-22C55E?style=flat-square)
+![Tests](https://img.shields.io/badge/Tests-160%20passing-22C55E?style=flat-square)
 ![License](https://img.shields.io/badge/License-MIT-6366F1?style=flat-square)
 ![Code style](https://img.shields.io/badge/Code%20style-Ruff-FFA500?style=flat-square)
 ![Type checked](https://img.shields.io/badge/Type%20checked-mypy%20strict-1E40AF?style=flat-square)
@@ -197,7 +197,7 @@ Each of these is backed by more than a test name — see [What Broke and How We 
 | Async Jobs | **Celery** + **Redis / Upstash** (`rediss://` TLS), eager mode for tests/demos, periodic beat schedule |
 | LLM | OpenAI-compatible client → local **Ollama** (e.g. `qwen2.5:32b-instruct`); deterministic offline shim for hermetic tests |
 | Templating | Jinja2 (dashboard) |
-| Code Quality | pytest (**149 backend tests across 18 files, 6 frontend across 2 files**), Ruff, mypy (strict) |
+| Code Quality | pytest (**160 backend tests across 19 files, 6 frontend across 2 files**), Ruff, mypy (strict) |
 
 ### Modes
 
@@ -239,7 +239,7 @@ uvicorn reclaim.api:app --reload
 # → http://127.0.0.1:8000/dashboard
 
 # 5. Run the test suite
-pytest                       # full suite (149 backend tests across 18 files, 6 frontend across 2 files)
+pytest                       # full suite (160 backend tests across 19 files, 6 frontend across 2 files)
 pytest tests/adversarial/    # adversarial resilience subset only
 ```
 
@@ -331,7 +331,7 @@ Human-override actions are recorded as `stage=manual_override` in the audit trai
 ## Testing
 
 ```bash
-pytest                        # full suite — 149 backend tests across 18 files, 6 frontend across 2 files
+pytest                        # full suite — 160 backend tests across 19 files, 6 frontend across 2 files
 pytest tests/adversarial/     # failure injection & resilience subset
 pytest -k "test_stopping"     # stopping rules only
 pytest -k "test_pipeline"     # end-to-end pipeline only
@@ -347,9 +347,13 @@ pytest -k "test_pipeline"     # end-to-end pipeline only
 | `test_state_machine.py` | Transition table, terminal state absorption, manual edges |
 | `test_metrics.py` | Three-way metric split; no conflation between LLM failures and rule overrides |
 | `test_api_v1.py` | Full HTTP surface — all endpoints, status codes, response schemas |
-| `test_audit_chain.py` | Append-only audit trail integrity, provenance fields |
+| `test_audit_chain.py` | Append-only audit trail integrity, provenance fields, tamper-evidence |
 | `test_manual.py` | Human-in-the-loop override actions and audit recording |
 | `test_simulator.py` | Rule sensitivity simulator correctness |
+| `test_robustness.py` | Multi-seed distribution reporting (distinct seeds ⇒ distinct rates) |
+| `test_baseline.py` | Counterfactual strategies + shared per-case success draws |
+| `test_tasks.py` | Broker-mode deferred-retry fire is audited like any other Act |
+| `test_llm_isolation.py` | Structural import-boundary proof (LLM has no execution authority) |
 | `tests/adversarial/` | Failure injection & resilience (see below) |
 
 
@@ -396,6 +400,16 @@ Every metric field is labelled to state exactly what it measures:
 
 - **`recovered_amount`** — sum of amounts on cases whose last act outcome contains `retry_succeeded`. **This does NOT prove settlement.** Settlement confirmation comes from the optional, non-blocking `settlement_reconciliation` verification lookup.
 - **`verification_enabled`** — when set, a best-effort, non-blocking Razorpay settlement lookup is performed after a successful retry. A missing or failed verification does **not** change the case outcome — it is an observational read for auditors, not a gate.
+
+---
+
+## Statistical Rigor & Structural Proof
+
+Beyond one deterministic demo batch, Reclaim ships three independent evidence layers for a skeptical panel:
+
+- **Multi-seed robustness reporting** (`python -m reclaim.robustness [N]`) — runs the full batch across N independently seeded synthetic batches, each on its **own freshly-created, isolated temp database** (a shared DB would dedupe every seed beyond the first on `UNIQUE(event_id)` and collapse the "distribution" to one repeated sample with stddev 0). It reports a genuine distribution — median, 5th/95th percentile, stddev — of recovery rate and recovered amount, and names the percentile of the default demo batch (seed 42) within it instead of ghosting it.
+- **Controlled counterfactual baselines** (`python -m reclaim.baseline [seed]`) — `do_nothing`, `retry_everything`, and the real Reclaim policy simulated against the SAME seeded batch on an isolated DB. Every case draws **one per-case seeded outcome** (`Random("seed:case")`) that all strategies share, so the three rows differ only in *which cases they attempt* — same world, different policy, literally. The conservative 85% chargeback assumption on policy-blocked retries is documented in code.
+- **Tamper-evident audit chain** (`python -m reclaim.verify_audit_chain`) — every audit entry is SHA-256-chained **including the `rule_override` safety boolean**; verification recomputes the whole chain and flags the first break, so a decision record cannot be silently altered.
 
 ---
 
@@ -460,6 +474,10 @@ src/reclaim/
   metrics.py           Batch report (three non-conflated counters)
   api.py               FastAPI application, routes, Jinja2 dashboard
   audit.py             Append-only audit trail writer
+  audit_chain.py       Hash-chain canonicalization of audit entries (tamper-evidence)
+  verify_audit_chain.py  Chain verifier CLI (recomputes + reports first break)
+  robustness.py        Multi-seed distribution reporting (per-seed isolated DBs)
+  baseline.py          Counterfactual strategy comparison (controlled per-case RNG)
   repo.py              Repository layer (case CRUD)
   db.py                SQLAlchemy engine + WAL mode setup
   celery_app.py        Celery app + periodic beat schedule
@@ -476,10 +494,14 @@ tests/
   test_state_machine.py   Transition table correctness
   test_metrics.py      Three-way metric split
   test_api_v1.py       Full HTTP surface
-  test_audit_chain.py  Audit trail integrity
+  test_audit_chain.py  Audit trail integrity + tamper-evidence
   test_manual.py       Human override flows
   test_simulator.py    Rule sensitivity simulator
-  adversarial/         Failure injection & resilience suite (9 tests)
+  test_robustness.py   Multi-seed distribution (distinct seeds ⇒ distinct rates)
+  test_baseline.py     Counterfactual comparison + shared per-case draws
+  test_tasks.py        Broker-mode deferred-retry audit
+  test_llm_isolation.py  Structural import-boundary test (LLM cannot execute)
+  adversarial/         Failure injection & resilience suite
 
 DECISIONS.md           Architecture decisions log (what was decided and why)
 CHANGELOG_SUBMISSION.md  Dated phase-level changelog

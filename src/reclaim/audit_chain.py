@@ -39,6 +39,7 @@ def _canonical_entry_dict(row_or_dict) -> dict:
         action_taken = row_or_dict.get("action_taken")
         outcome = row_or_dict.get("outcome", "")
         fallback_triggered = row_or_dict.get("fallback_triggered", False)
+        rule_override = row_or_dict.get("rule_override", False)
         timestamp = row_or_dict.get("timestamp")
     else:
         # ORM row
@@ -50,6 +51,7 @@ def _canonical_entry_dict(row_or_dict) -> dict:
         action_taken = row_or_dict.action_taken
         outcome = row_or_dict.outcome
         fallback_triggered = row_or_dict.fallback_triggered
+        rule_override = row_or_dict.rule_override
         timestamp = row_or_dict.timestamp
 
     # Normalize timestamp to ISO format UTC.
@@ -84,6 +86,7 @@ def _canonical_entry_dict(row_or_dict) -> dict:
         "action_taken": action_taken,
         "outcome": outcome,
         "fallback_triggered": fallback_triggered,
+        "rule_override": rule_override,
         "timestamp": ts_str,
     }
 

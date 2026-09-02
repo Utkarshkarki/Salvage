@@ -258,7 +258,27 @@ def ingest_event(db: Database, event: WebhookEvent, settings: Settings) -> tuple
                     .filter_by(event_id=event.event_id)
                     .first()
                 )
-            if existing is None:  # pragma: no cover - defensive
+            if existing is None:
+                # The INSERT collided on a DIFFERENT uniqueness constraint:
+                # the same subscription (case_id UNIQUE) arriving as a NEW
+                # event_id is a second failure for an already-tracked
+                # subscription. Reclaim models one recovery case per
+                # subscription (single-cycle), so this is a deliberate,
+                # graceful boundary rejection — never a 500 crash. The API
+                # layer maps RazorpayWebhookException -> 422.
+                with db.create_session() as session3:
+                    by_case = (
+                        session3.query(RecoveryCaseRow)
+                        .filter_by(case_id=case.case_id)
+                        .first()
+                    )
+                if by_case is not None:
+                    raise RazorpayWebhookException(
+                        f"case_id {case.case_id} is already tracked (event "
+                        f"{by_case.event_id}); a new event for an existing "
+                        "subscription is a fresh attempt-cycle, which the "
+                        "single-case-per-subscription model does not ingest"
+                    ) from exc
                 raise RazorpayWebhookException(
                     f"integrity error without existing row: {exc}"
                 ) from exc

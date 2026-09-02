@@ -52,12 +52,18 @@ def retry_payment_task(case_id: str, attempt_number: int) -> dict[str, Any]:
 
     Idempotent by construction: execute_action claims via the ledger, so any
     duplicate invocation is a logged no-op and can never double-charge.
+
+    This path MOVES MONEY, so it is explainable like every other Act: the fire
+    is written to the append-only audit trail (stage ``scheduled_retry``) with
+    its outcome, so a deferred retry is never invisible to an auditor — even
+    though it runs outside the interactive state-machine flow.
     """
     from . import repo
     from .act import execute_action
+    from .audit import write_audit
     from .config import get_settings
     from .db import get_db
-    from .models import Action, DecideOutput
+    from .models import Action, AuditLogEntry, DecideOutput
 
     settings = get_settings()
     db = get_db()
@@ -69,7 +75,41 @@ def retry_payment_task(case_id: str, attempt_number: int) -> dict[str, Any]:
         action=Action.RETRY_NOW,
         reasoning="deferred retry fired by scheduler",
     )
+
+    # Document the fire BEFORE executing: a money action must be visible in the
+    # trail even if the wallet fails below.
+    write_audit(
+        db,
+        AuditLogEntry(
+            case_id=case_id,
+            stage="scheduled_retry",
+            agent_reasoning="deferred retry fired by scheduler (broker mode)",
+            input_state={"action": "retry_now", "attempt_number": attempt_number},
+            decision="retry_now",
+            action_taken="retry_now",
+            outcome="SCHEDULED_RETRY_FIRING",
+            fallback_triggered=False,  # scheduler, never an LLM failure
+            rule_override=False,
+        ),
+    )
+
     result = execute_action(db, case, decision, settings)
+
+    write_audit(
+        db,
+        AuditLogEntry(
+            case_id=case_id,
+            stage="scheduled_retry",
+            agent_reasoning="deferred retry executed; see ledger + boot outcome",
+            input_state={"action": "retry_now", "attempt_number": attempt_number},
+            decision="retry_now",
+            action_taken=result.action_taken,
+            outcome=f"{result.terminal_state.value}/{result.outcome}"
+                    f"{' DUP' if result.idempotent_duplicate else ''}",
+            fallback_triggered=False,
+            rule_override=False,
+        ),
+    )
     return {
         "case_id": case_id,
         "attempt_number": attempt_number,

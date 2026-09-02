@@ -130,6 +130,28 @@ def test_unmappable_amount_rejected(settings: Settings) -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_new_event_for_existing_subscription_raises_gracefully(settings: Settings, db: Database) -> None:
+    """A second failure for an already-tracked subscription (same case_id, NEW
+    event_id) is a deliberate boundary rejection, never a 500.
+
+    RecoveryCaseRow.case_id is UNIQUE; a genuine recurring failure arrives as a
+    fresh event_id (so the dedupe fast-path misses) but the same subscription_id
+    -> same case_id -> IntegrityError on INSERT. ingest_event must convert that
+    into an explicit RazorpayWebhookException (mapped to 422 by the API layer),
+    not let the raw IntegrityError escape.
+    """
+    first = parse_event(_body(amount=9900), event_id_hint="evt_first")
+    case, is_new, _ = ingest_event(db, first, settings)
+    assert is_new
+    assert case.case_id == "sub_1"
+
+    second = parse_event(_body(amount=9900), event_id_hint="evt_second")
+    assert second.case_id() == case.case_id  # same subscription -> same case_id
+
+    with pytest.raises(RazorpayWebhookException, match="already tracked"):
+        ingest_event(db, second, settings)
+
+
 def test_ingest_creates_case_then_duplicate_is_noop(settings: Settings, db: Database) -> None:
     body = _body()
     sig = compute_signature(SECRET, body)

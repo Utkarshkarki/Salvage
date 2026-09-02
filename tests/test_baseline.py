@@ -9,6 +9,9 @@ from reclaim.baseline import (
     _simulate_do_nothing,
     _simulate_retry_everything,
     _identify_retry_eligible_cases,
+    _case_success,
+    _build_fresh_db,
+    _run_baseline_comparison,
 )
 
 
@@ -211,6 +214,86 @@ def test_retry_everything_counts_full_batch_against_preexisting_data(settings, t
     assert comparison.retry_everything.gross_recovered > 0
     assert comparison.do_nothing.gateway_calls == 0
     assert comparison.do_nothing.gross_recovered == 0.0
+
+
+def test_case_success_is_pure_and_order_independent():
+    """The controlled counterfactual's core guarantee: a (seed, case) draws ONE
+    outcome, independent of how many cases came before it.
+
+    Pre-fix, each strategy drained its own ``Random(seed)`` stream, so the draw
+    for case X depended on how many prior cases that strategy happened to
+    attempt — the same case could 'succeed' for one strategy and 'fail' for the
+    other. A per-case seeded draw (``Random("seed:case")``) makes the outcome a
+    pure function of the case, which is the only way 'same world, different
+    policy' can be literal. This test pins that: results are identical no
+    matter the iteration order, and repeatable.
+    """
+    cases = [("case_a", "R01"), ("case_b", "54"), ("case_c", "91"), ("case_d", "N7")]
+    forward = [_case_success(42, c, r) for c, r in cases]
+    reversed_then_forward = [
+        _case_success(42, c, r) for c, r in reversed(cases)
+    ][::-1]
+    assert forward == reversed_then_forward, (
+        "the outcome for a case changed when it was drawn after different "
+        "preceding cases — the draw is stream-position dependent (not a "
+        "controlled counterfactual)"
+    )
+    # Determinism: same key, same result on re-call.
+    assert [_case_success(42, c, r) for c, r in cases] == forward
+
+
+def test_same_world_counterfactual_both_strategies_read_same_draw(settings):
+    """Both strategies must see the SAME per-case realization in a real run.
+
+    After running the real counterfactual on a fresh isolated DB, recompute the
+    expected success counts independently from the per-case model and check
+    both strategies' reported counts match. retry_everything attempts every
+    case; reclaim attempts only its retry-eligible subset — so under a shared
+    per-case draw, retry_everything's successes are a strict superset of
+    reclaim's. The pre-fix two-streams implementation violated exactly this.
+    """
+    db, tmp_path = _build_fresh_db(settings)
+    try:
+        seed = 42
+        comparison = _run_baseline_comparison(seed=seed, settings=settings, db=db)
+
+        from reclaim.db import RecoveryCaseRow
+
+        with db.create_session() as s:
+            rows = s.query(RecoveryCaseRow).all()
+        assert len(rows) >= 2  # sanity: a real batch was ingested
+
+        case_ids = [r.case_id for r in rows]
+
+        expected_retry_all = sum(
+            1 for r in rows if _case_success(seed, r.case_id, r.failure_reason)
+        )
+        eligible = _identify_retry_eligible_cases(db, case_ids, settings)
+        expected_reclaim = sum(
+            1
+            for r in rows
+            if r.case_id in eligible
+            and _case_success(seed, r.case_id, r.failure_reason)
+        )
+
+        # Same world, different policy: counts reconcile exactly.
+        assert comparison.retry_everything.cases_succeeded == expected_retry_all
+        assert comparison.reclaim.cases_succeeded == expected_reclaim
+        # Superset: retry_everything cannot under-recover vs reclaim for the
+        # cases reclaim attempts — the same draw is read by both.
+        assert (
+            comparison.retry_everything.cases_succeeded
+            >= comparison.reclaim.cases_succeeded
+        )
+        # And the simulated policy actually differs from naive retrying.
+        assert comparison.reclaim.gateway_calls < comparison.retry_everything.gateway_calls
+    finally:
+        db.close()
+        import os
+        try:
+            os.remove(tmp_path)
+        except OSError:  # pragma: no cover - best-effort cleanup
+            pass
 
 
 def test_baseline_cli_import():

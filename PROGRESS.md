@@ -2,7 +2,7 @@
 
 > Read this file first at the start of every session before doing anything else.
 
-**Status:** Pipeline complete. Phases 1–3 done. **Phase 4 (production-grade React frontend) COMPLETE:** `/api/v1/*` JSON namespace (thin wrappers over tested logic) + a strict-mode Vite/React/TS/Tailwind/React-Query SPA (`frontend/`) — Case List, Case Detail w/ override actions, Simulator, Rules, Customer Status pages + Vitest component tests + CORS-for-local-dev. Tests green: backend **117 across 13 files** (99 prior + 18 HTTP-layer `test_api_v1.py`), frontend 6/2. (A1 ngrok/webhook registration still needs the operator's real Razorpay secret — live paths are env-gated and documented.)
+**Status:** Phases 1–5 complete + post-submission hardening (independent-review fixes round). Backend **160 tests / 19 files, all passing** (29.1s full suite); frontend 6/2 untouched. Phase 5 statistical-rigor tooling (multi-seed robustness, controlled counterfactual baseline, tamper-evident audit chain) was found by an independent review to under-deliver — the robustness suite measured one repeated sample (stddev 0) and the baseline's "same world, different policy" was an RNG draw artifact — and is now fixed with regression tests that actually assert seeds differ and strategies share per-case draws. (A1 ngrok/webhook registration still needs the operator's real Razorpay secret — live paths are env-gated and documented.)
 
 ## What's done
 
@@ -452,3 +452,118 @@ regression tests).
     Also fixed a stray malformed `<parameter ...>` fragment that had corrupted the
     end of PROGRESS.md (leftover from a failed prior edit) — file now ends cleanly
     on item #31.
+
+---
+
+## Phase 5 — Independent adversarial review: fixes (2026-09-02)
+
+An independent review against the source (not the prose) verified the core
+pipeline — "LLM proposes, code disposes" is structurally real (no execution
+authority in `llm_client.py`, enforced by an AST-boundary test), idempotency is a
+DB UNIQUE held under real threads, the three-way metric split is now clean
+(`rule_override` boolean, not a string match), the state machine is guarded — but
+found the Phase 5 *statistical-rigor* pillar did not hold up in execution, plus
+several correctness gaps. **All fixed this round: backend tests 151 → 160, all
+passing (29.1s); frontend 6/2 unchanged.**
+
+33. **Robustness suite measured one repeated sample (review #1, highest damage).**
+    Root cause: `run_robustness_suite` ingested every seed into a SHARED
+    `get_db()`; `generate_batch` emits seed-invariant event ids
+    (`evt_{i:05d}`), so seeds 1–99 deduped on UNIQUE(event_id) → every seed
+    reported identical metrics, stddev provably 0, "distribution" = one sample
+    repeated 100×, and it polluted the real `reclaim.db` with N×60 cases.
+    Fixes: (a) `_run_one_seed` now runs each seed on its OWN freshly-created,
+    file-backed temp DB (removed on exit) — isolates seeds *and* stops polluting
+    the real DB; (b) extracted `_build_report` so the percentile/stddev math is
+    unit-testable without re-paying N full batch runs; (c) regression tests —
+    `test_robustness_suite_different_outcomes` now asserts **at least two
+    distinct (rate, amount) outcomes** across seeds (previously only that the
+    seed labels differed, which the buggy code passed), plus two `_build_report`
+    unit tests. Dropped the 86-full-run headline-percentile integration test
+    (free only under the dedup bug) → the suite got *faster* (40.6s → 29.1s).
+    **Decision:** keep the seed-invariant `evt_{i:05d}` ids in `synthetic.py` —
+    ids are unique *within* a seed's fresh DB; the isolation, not the id format,
+    is the fix.
+    Also fixed while running the CLI live: `robustness.py`'s `__main__` was the
+    ONE Phase 5 CLI still missing the UTF-8 stdout reconfigure (PROGRESS #30
+    claimed both were done; only `baseline.py` had it) — a Windows cp1252
+    console crashed printing `₹` after the distribution. Mirrored the same
+    `sys.stdout.reconfigure(encoding="utf-8", errors="replace")` fix; CLI now
+    completes (`python -m reclaim.robustness 5` → recovery-rate stddev 0.0701,
+    recovered-amount stddev ₹9,608 — a genuine distribution).
+34. **Baseline "same world, different policy" was not controlled (review #2).**
+    Root cause: both strategies created their OWN `random.Random(seed)` and
+    drained it at different stream positions (retry_everything drew for all 60
+    cases; reclaim only for retry-eligible ones), so the same case faced a
+    different draw in each world — the published 20/60 & 11/24 successes
+    (₹55,382 / ₹24,089) were a single lucky/unlucky draw artifact. Fix:
+    `_case_success(seed, case_id, reason)` derives each draw from
+    `Random(f"{seed}:{case_id}")` — a pure per-case function SHARED by both
+    strategies; only *which cases are attempted* differs. Regression tests:
+    `test_case_success_is_pure_and_order_independent` (a case's draw does not
+    move when preceding cases change) + `test_same_world_counterfactual_both_strategies_read_same_draw`
+    (recompute both strategies' success counts independently from the per-case
+    model on a real run → they reconcile; retry_everything's successes are a
+    superset of reclaim's). **The ₹ figures moved and must be re-quoted from the
+    controlled counterfactual before being cited again.**
+35. **Tamper chain skipped the safety boolean (review #3).** `rule_override` —
+    the field anchoring `stopping_rule_overrides` — was omitted from
+    `audit_chain._canonical_entry_dict`, so flipping it on a row passed
+    verification. Fix: added to both the dict and ORM branches. Regression
+    tests: `test_verify_detects_rule_override_tamper` (finalize → flip →
+    verify breaks) + `test_canonical_entry_dict_covers_rule_override` (both
+    branches).
+36. **Second event for an already-tracked subscription crashed ingest (review
+    #4 — the one true crash-on-real-input bug).** `RecoveryCaseRow.case_id` is
+    UNIQUE; `ingest_event` only rescued the event_id collision, so a *new*
+    event_id on an existing subscription fell through to an uncaught
+    `IntegrityError` → 500. Fix: on a non-event_id integrity collision, re-query
+    by `case_id` and raise an explicit `RazorpayWebhookException`
+    ("already tracked", → 422 by the API layer) — a deliberate single-cycle
+    boundary, never a crash. Regression test:
+    `test_new_event_for_existing_subscription_raises_gracefully`.
+    **Decision:** reject as out-of-model rather than model multi-cycle retry
+    history per subscription (attempt 2/3/4 + cooldown cycles are separate cases
+    in the synthetic batch, not multiple events on one subscription); rationale
+    in the webhook comment.
+37. **Broker-mode deferred retry moved money with no audit (review #5).**
+    `retry_payment_task` called `execute_action` directly — scheduler-fired
+    retries (or their failures) were invisible to the audit trail and metrics,
+    violating "every money action explained + audited" in the one non-stub path
+    that actually fires money. Fix: the fire now writes two `scheduled_retry`
+    entries — pre-fire `SCHEDULED_RETRY_FIRING` and post-execution (terminal
+    state / outcome / dup flag) — both `fallback_triggered=False,
+    rule_override=False` (a scheduler fire is never an LLM failure or a rule
+    override). Idempotency preserved by the ledger (duplicate invocation →
+    `idempotent_duplicate=True`, still logged). New `tests/test_tasks.py` (3
+    tests): fire is audited, duplicate flagged, unknown case is a clean dict
+    error.
+38. **Baseline string-matched "OVERRIDE" (review #6).** `_identify_retry_eligible_cases`
+    and the blocked-value computation matched `"OVERRIDE"` in the outcome string
+    — the exact brittle pattern already fixed to a boolean in `metrics.py` — and
+    it drives a financial figure. Both now read the explicit `entry.rule_override`
+    boolean (decide-entry writes it since 7d66b47).
+39. **README hygiene + Phase 5 visibility (review #7).** Counts refreshed from
+    the stale 149/155 to **160 backend (19 files) + 6 frontend (2 files)**;
+    badge updated; new README section "Statistical Rigor & Structural Proof";
+    Project Layout + Test Modules now list `robustness.py`, `baseline.py`,
+    `audit_chain.py`, `verify_audit_chain.py`, `test_tasks.py`,
+    `test_llm_isolation.py`. The counterfactual wording ("same world, different
+    policy") is kept because with #34 it is now literally true.
+
+## In progress / next
+
+- **Baseline ₹ figures RE-QUOTED from the controlled counterfactual
+  (2026-09-02, verified live)** — `RAZORPAY_WEBHOOK_SECRET=… python -m
+  reclaim.baseline 42` now reports (draw-artifact values in parens): `do_nothing`
+  0 / ₹0; `retry_everything` 60 calls / **9 ok** (was 20) / ₹23,491 gross (was
+  ₹55,382) / ₹137,974 blocked / **−₹93,786.90 net** (was −₹61,895.90); `reclaim`
+  24 calls / **6 ok** (was 11) / **₹15,994 net** (was ₹24,089). The 9/60 and 6/24
+  match the reviewer's own independent controlled re-derivation exactly — the
+  fix reproduces their prediction. Any submission-facing doc quoting the old
+  ₹55,382 / ₹24,089 figures MUST be updated to these.
+- **A1** (ngrok webhook registration + live-mode run) still blocked on the
+  operator's REAL Razorpay secret/test keys — never guessed.
+- **Commit**: the working tree holds this round's fixes + tests (robustness,
+  baseline, audit_chain, tasks, webhook) and the README/PROGRESS updates,
+  uncommitted on `main`.

@@ -6,8 +6,21 @@ from reclaim.config import Settings
 from reclaim.robustness import (
     RobustnessResult,
     RobustnessReport,
+    _build_report,
     run_robustness_suite,
 )
+
+
+def _result(seed: int, rate: float, amount: float) -> RobustnessResult:
+    """Compact crafted per-seed result for unit-testing the report plumbing."""
+    return RobustnessResult(
+        seed=seed,
+        recovery_rate=rate,
+        recovered_amount=amount,
+        amount_at_risk=10000.0,
+        recovered_cases=round(rate * 60),
+        total_cases=60,
+    )
 
 
 def test_robustness_result_dataclass():
@@ -109,17 +122,24 @@ def test_run_robustness_suite_smoke_test(settings, db):
 
 
 def test_robustness_suite_different_outcomes(settings, db):
-    """Test that different seeds produce different outcomes."""
-    # Run with just 2 seeds to test independence
-    report = run_robustness_suite(num_seeds=2, settings=settings, db=db)
+    """Regression: genuinely independent per-seed runs must DIFFER.
 
-    # We expect different seeds to produce different results
-    # (though with small sample size they might be similar)
-    assert len(report.runs) == 2
-    # At minimum, they should have different seed values
-    assert report.runs[0].seed != report.runs[1].seed
+    Each seed runs on its own fresh, isolated temp DB against a distinct
+    synthetic batch, so the metric distribution must have spread — by no means
+    a single sample repeated N times. Pre-fix, a shared DB deduped every seed
+    beyond the first (event ids are seed-invariant) and all runs reported
+    identical rates/amounts with stddev provably 0; this test is the guard.
+    """
+    report = run_robustness_suite(num_seeds=3, settings=settings, db=db)
 
-    # Check that recovery rates are valid
+    assert len(report.runs) == 3
+    distinct_outcomes = {(r.recovery_rate, r.recovered_amount) for r in report.runs}
+    assert len(distinct_outcomes) >= 2, (
+        "all seeds reported identical recovery — the distribution is one "
+        f"sample repeated: {sorted(distinct_outcomes)}"
+    )
+
+    # Rates are valid
     for run in report.runs:
         assert 0.0 <= run.recovery_rate <= 1.0
         assert run.recovered_amount >= 0.0
@@ -159,23 +179,40 @@ def test_robustness_distribution_stats_math():
     assert stddev > 0.0
 
 
-def test_headline_batch_percentile_calculation(settings, db):
-    """Test the headline batch percentile calculation."""
-    # Run with seeds 0-10, then seed 42
-    report_small = run_robustness_suite(num_seeds=11, settings=settings, db=db)
+def test_headline_batch_percentile_calculation():
+    """Headline percentile = share of runs whose rate beats seed 42's.
 
-    # Now run a larger suite that includes seed 42
-    report_with_headline = run_robustness_suite(num_seeds=43, settings=settings, db=db)
-
-    # Find the headline run in the report
-    headline_run = next(
-        (r for r in report_with_headline.runs if r.seed == 42), None
+    Unit-tested on crafted runs so the distribution plumbing is verified
+    without paying the 43-real-seed cost of a full ``run_robustness_suite``
+    call (which the old integration test did — free only under the pre-fix
+    shared-DB dedup, expensive once seeds are genuinely independent).
+    """
+    report = _build_report(
+        [
+            _result(seed=0, rate=0.10, amount=4_000.0),
+            _result(seed=1, rate=0.20, amount=8_000.0),
+            _result(seed=2, rate=0.30, amount=12_000.0),
+            _result(seed=42, rate=0.40, amount=16_000.0),
+            _result(seed=43, rate=0.50, amount=20_000.0),
+        ],
+        headline_seed=42,
     )
-    assert headline_run is not None
-    assert headline_run.seed == 42
+    assert report.headline_batch_seed == 42
+    # 3 of 5 runs sit below seed 42's rate (0.10/0.20/0.30 < 0.40)
+    assert report.headline_batch_percentile == 60.0
+    # Spread is real, not one repeated sample.
+    assert report.recovery_rate_stddev > 0.0
+    assert report.recovered_amount_stddev > 0.0
+    assert report.recovery_rate_median == 0.30
 
-    # Percentile should be computed
-    assert 0.0 <= report_with_headline.headline_batch_percentile <= 100.0
+
+def test_headline_batch_percentile_when_seed_absent():
+    """Seed 42 absent from the run -> percentile collapses to 0.0, no crash."""
+    report = _build_report(
+        [_result(seed=0, rate=0.10, amount=1.0), _result(seed=1, rate=0.20, amount=2.0)],
+        headline_seed=42,
+    )
+    assert report.headline_batch_percentile == 0.0
 
 
 if __name__ == "__main__":

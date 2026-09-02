@@ -177,6 +177,86 @@ def test_verify_detects_mutated_entry(db):
     assert result.first_broken_entry_reason is not None
 
 
+def test_verify_detects_rule_override_tamper(db):
+    """The safety boolean is part of the tamper chain.
+
+    ``rule_override`` anchors stopping_rule_overrides — the centerpiece safety
+    metric. If it were excluded from the canonical dict, flipping it on an
+    audit row would silently pass verification and falsify the safety story.
+    It MUST be hashed like every other field.
+    """
+    write_audit(
+        db,
+        AuditLogEntry(
+            case_id="case_1", stage="decide", agent_reasoning="",
+            input_state={}, decision="RETRY_NOW", action_taken=None,
+            outcome="SUCCESS", fallback_triggered=False,
+            rule_override=False, timestamp=utcnow(),
+        ),
+    )
+    write_audit(
+        db,
+        AuditLogEntry(
+            case_id="case_1", stage="ingest", agent_reasoning="",
+            input_state={}, decision="", action_taken=None,
+            outcome="INGESTED", fallback_triggered=False,
+            rule_override=False, timestamp=utcnow(),
+        ),
+    )
+    finalize_audit_chain(db)
+
+    with db.create_session() as s:
+        ok = verify_audit_chain(s)
+    assert ok.is_valid  # baseline state is clean
+
+    # Flip the safety boolean on the row that verify recomputes into the hash.
+    with db.create_session() as s:
+        row = s.query(AuditLogRow).filter(AuditLogRow.id == 1).first()
+        assert row is not None
+        row.rule_override = True
+        s.commit()
+
+    with db.create_session() as s:
+        broken = verify_audit_chain(s)
+
+    assert not broken.is_valid
+    assert broken.first_broken_entry_id is not None
+    assert broken.first_broken_entry_reason is not None
+
+
+def test_canonical_entry_dict_covers_rule_override():
+    """``rule_override`` must be in the canonical dict in both branches."""
+    entry = AuditLogEntry(
+        case_id="case_123",
+        stage="decide",
+        agent_reasoning="test reasoning",
+        input_state={"key": "value"},
+        decision="RETRY_NOW",
+        action_taken=None,
+        outcome="SUCCESS",
+        fallback_triggered=False,
+        rule_override=True,
+        timestamp=utcnow(),
+    )
+    canonical = _canonical_entry_dict(entry)
+    assert canonical["rule_override"] is True
+
+    # Dict-branch parity: same field read from a raw dict.
+    as_dict = {
+        "case_id": "case_123",
+        "stage": "decide",
+        "agent_reasoning": "test reasoning",
+        "input_state": {"key": "value"},
+        "decision": "RETRY_NOW",
+        "action_taken": None,
+        "outcome": "SUCCESS",
+        "fallback_triggered": False,
+        "rule_override": True,
+        "timestamp": utcnow(),
+    }
+    assert _canonical_entry_dict(as_dict)["rule_override"] is True
+
+
 def test_verify_detects_broken_prev_hash(db):
     """Test that mutating prev_hash is detected."""
     # Write initial entries

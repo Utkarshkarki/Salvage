@@ -77,11 +77,10 @@ are deliberately halted or escalated to a human. This yields three hard guarante
 
 **Note on documentation drift:** earlier drafts of this file cited "68 tests / 7 files" (itself a
 correction of the older "63 tests / 6 files"), then "99 tests / 12 files", then "117 tests / 13
-files". This version has been rewritten against the current, verified state: **149 backend tests
-across 18 files** plus **6 frontend component tests across 2 files** (`Vitest`), matching
-`PROGRESS.md`. (The human-facing `README.md` still states 99 in spots — it lags the Phase 4/5
-additions; `PROGRESS.md` is the live authority and is what this document tracks.) The per-file
-counts and module inventory below reflect the current repository.
+files". This version has been rewritten against the current, verified state: **160 backend tests
+across 19 files** plus **6 frontend component tests across 2 files** (`Vitest`), matching
+`PROGRESS.md` and `README.md`. The per-file counts and module inventory below reflect the current
+repository.
 
 ---
 
@@ -1157,9 +1156,12 @@ This section goes file-by-file through **every** module in `src/reclaim/`.
     cases; **net** = gross − (85% × policy-blocked value), where policy-blocked value = the sum of
     amounts the real policy would have stopped/escalated.
   - `reclaim` — the **real** pipeline runs first (via `run_batch`); its retry-eligible cases are
-    identified from the audit trail (no `decide` `OVERRIDE` **and** an `act`/`retry_now`), then
-    outcomes are recomputed with the same seeded success model. The probabilistic result (e.g. seed
-    42: ₹24,089 net) is honestly distinct from the stub-mode batch report (₹39,776 deterministic).
+    identified from the audit trail (no `decide` `rule_override` **and** an `act`/`retry_now`), then
+    outcomes are recomputed from the **same per-case seeded model** (`_case_success`, keyed
+    `Random("seed:case")`) every strategy reads, so the rows differ only in *which cases they
+    attempt* — a controlled "same world, different policy" counterfactual. The probabilistic result
+    (e.g. seed 42: ₹15,994 net) is honestly distinct from the stub-mode batch report (₹39,776
+    deterministic).
 - **`_build_fresh_db(settings)`** — the comparison **always runs on a fresh, file-backed temp SQLite
   DB** (isolated from, and never mutating, the real DB). This fixes the original bug where re-ingesting
   the seeded batch into the real `reclaim.db` deduped every event (UNIQUE `event_id`) → 0 calls / ₹0.
@@ -1172,14 +1174,17 @@ This section goes file-by-file through **every** module in `src/reclaim/`.
   strategy table (Gateway Calls / Cases Succeeded / Gross Recovered / Policy-Blocked Value / Net
   Recovered) plus comparative analysis (gateway-call reduction %, net-recovery advantage,
   policy-blocked value insight). Reconfigures stdout to UTF-8 so `₹` never crashes a cp1252 console.
-  Live seed-42 result (verified in-session): `retry_everything` 60 calls / ₹55,382 gross /
-  −₹61,895.90 net (85% chargeback on ₹137,974 blocked) vs `reclaim` ₹24,089 net — **60%** fewer
-  gateway calls.
+  Live seed-42 result (controlled counterfactual, verified in-session):
+  `retry_everything` 60 calls / **9 ok** / ₹23,491 gross / −₹93,786.90 net (85% chargeback on
+  ₹137,974 blocked) vs `reclaim` 24 calls / **6 ok** / ₹15,994 net — **60%** fewer gateway calls.
+  (The earlier ₹55,382 gross / ₹24,089 net figures were an RNG-alignment artifact — each
+  strategy drew from its own `Random(seed)` stream at different positions; the per-case shared
+  draw above is the controlled result.)
 
 ---
 
 ### 4.32 Test files (`tests/` + `frontend/`)
-Here the suite is listed per file with exact test counts. **Backend: 149 tests across 18 files.**
+Here the suite is listed per file with exact test counts. **Backend: 160 tests across 19 files.**
 **Frontend (Phase 4): 6 component tests across 2 Vitest files** — see the `frontend/` note at the end.
 
 - **`conftest.py`** — hermetic fixtures: an autouse `_no_dotenv` clears the settings cache; a
@@ -1559,8 +1564,8 @@ reclaim-verify-audit-chain                 # proves the audit log is un-tampered
   disclosure** of where the seed-42 batch falls.
 - **Baseline** — prints the strategy table (Gateway Calls / Cases Succeeded / Gross / Policy-Blocked
   Value / Net), with an always-fresh temp DB (never the real `reclaim.db`) and the documented 85%
-  chargeback assumption for policy-blocked retries. Live result: **reclaim ₹24,089 net vs
-  retry-everything ₹55,382 gross / −₹61,895.90 net; 60% fewer gateway calls.**
+  chargeback assumption for policy-blocked retries. Live result: **reclaim ₹15,994 net vs
+  retry-everything ₹23,491 gross / −₹93,786.90 net; 60% fewer gateway calls.**
 - **Audit chain** — recomputes every `entry_hash`/`prev_hash` and verifies the log. A healthy log
   prints `✓ Chain is valid (N entries)`; any tamper prints the first broken entry id + reason and
   exits non-zero.
@@ -1751,7 +1756,7 @@ npm run format                     # Prettier
 ### 8.6 Testing conventions
 - Hermetic by construction: fixtures ignore the real `.env`, use per-test SQLite files, and run in
   `offline` + `stub` + eager modes.
-- **149 backend tests across 18 files**, covering every domain boundary: webhook
+- **160 backend tests across 19 files**, covering every domain boundary: webhook
   signature/parse/dedupe, state-machine legality (incl. manual edges), all seven stopping rules
   (incl. R7 floor + policy-as-code introspection), Pydantic invariants, synthetic generator
   invariants, end-to-end fallback/idempotency/state flows, metric-counter independence, the rule
@@ -1808,7 +1813,7 @@ npm run format                     # Prettier
 | Path | Role |
 |------|------|
 | `src/reclaim/` | Entire application (31 modules) |
-| `tests/` | 149 backend tests across 18 files (incl. `tests/adversarial/`, 12 tests, `test_api_v1.py`, 18 tests, and the Phase 5 rigor/isolation files) |
+| `tests/` | 160 backend tests across 19 files (incl. `tests/adversarial/`, 12 tests, `test_api_v1.py`, 18 tests, `test_tasks.py`, 3 tests, and the Phase 5 rigor/isolation files) |
 | `frontend/` | Phase 4 React SPA — 6 component tests across 2 Vitest files |
 | `scripts/` | `dev.sh` / `dev.ps1` — launch backend + Vite together |
 | `pyproject.toml` | Python build + deps + pytest/ruff/mypy config + the 4 Phase 5 `[project.scripts]` |

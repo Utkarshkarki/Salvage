@@ -87,16 +87,24 @@ RETRY_SUCCESS_RATE: dict[str, float] = {
 }
 
 
-def _retry_would_succeed(failure_reason: str, rng: random.Random) -> bool:
-    """Simulate whether a retry would succeed for a given decline code.
+def _case_success(seed: int, case_id: str, failure_reason: str) -> bool:
+    """Deterministic per-case retry outcome shared by every strategy.
 
-    Used ONLY in the counterfactual baseline comparison to model realistic
-    retry outcomes. The real pipeline (stub mode) always succeeds (deterministic).
-    This function makes the baseline comparison meaningful: both strategies
-    face the same underlying success probabilities; only which cases they
-    retry differs.
+    The counterfactual's fairness guarantee: the SAME (seed, case) must face
+    the SAME retry outcome no matter which policy is being simulated, so the
+    only thing that differs between strategies is *which cases they attempt*.
+    Deriving the draw from a per-case seed (``Random(f"{seed}:{case_id}")``) —
+    rather than pulling from one shared stream whose index depends on how many
+    prior cases a strategy happened to attempt — makes that guarantee literal.
+
+    This replaces the old two-independent-streams approach, where each
+    strategy drained the same ``Random(seed)`` at different indices, so the
+    same case could "succeed" for one strategy and "fail" for the other purely
+    because of RNG alignment (not policy). That was not a controlled
+    counterfactual; this is.
     """
     rate = RETRY_SUCCESS_RATE.get(failure_reason, 0.25)  # default for unknown codes
+    rng = random.Random(f"{seed}:{case_id}")
     return rng.random() < rate
 
 
@@ -115,7 +123,6 @@ def _simulate_retry_everything(db, case_ids, settings, seed: int = 42):
     """
     from reclaim import repo
 
-    rng = random.Random(seed)  # deterministic per-run
     gateway_calls = len(case_ids)
 
     gross_recovered = 0.0
@@ -124,7 +131,10 @@ def _simulate_retry_everything(db, case_ids, settings, seed: int = 42):
         row = repo.get_case_row(db, case_id)
         if row is not None:
             case = repo.row_to_case(row)
-            if _retry_would_succeed(case.failure_reason, rng):
+            # Shared per-case outcome (see _case_success): the SAME case faces
+            # the SAME draw here and in the reclaim strategy, for a controlled
+            # counterfactual.
+            if _case_success(seed, case.case_id, case.failure_reason):
                 cases_succeeded += 1
                 gross_recovered += case.amount
 
@@ -164,8 +174,10 @@ def _identify_retry_eligible_cases(db, case_ids, settings):
         # A stopping-rule override on the decide stage means the real policy
         # rejected a retry proposal. If there's no override, the policy would
         # have attempted the retry (even if it later failed in stub mode).
+        # Read the explicit rule_override boolean (NOT the "OVERRIDE" outcome
+        # string) so the classification is immune to outcome-format drift.
         overridden = any(
-            entry.stage == "decide" and "OVERRIDE" in (entry.outcome or "")
+            entry.stage == "decide" and entry.rule_override
             for entry in trail
         )
         if not overridden:
@@ -197,8 +209,6 @@ def _simulate_reclaim_with_realistic_outcomes(db, case_ids, settings, seed: int 
     """
     from reclaim import repo
 
-    rng = random.Random(seed)
-
     # Identify which cases Reclaim would attempt to retry (not blocked by stopping rules).
     retry_eligible = _identify_retry_eligible_cases(db, case_ids, settings)
     gateway_calls = len(retry_eligible)
@@ -211,7 +221,9 @@ def _simulate_reclaim_with_realistic_outcomes(db, case_ids, settings, seed: int 
             row = repo.get_case_row(db, case_id)
             if row is not None:
                 case = repo.row_to_case(row)
-                if _retry_would_succeed(case.failure_reason, rng):
+                # Same per-case outcome as retry_everything reads (see
+                # _case_success) — only which cases get attempted differs.
+                if _case_success(seed, case.case_id, case.failure_reason):
                     cases_succeeded += 1
                     gross_recovered += case.amount
 
@@ -340,8 +352,10 @@ def _run_baseline_comparison(
     for case_id in case_ids:
         from reclaim import repo
         trail = repo.audit_trail(db, case_id)
+        # Explicit rule_override boolean (same rationale as
+        # _identify_retry_eligible_cases — never string-match the outcome).
         overridden = any(
-            entry.stage == "decide" and "OVERRIDE" in (entry.outcome or "")
+            entry.stage == "decide" and entry.rule_override
             for entry in trail
         )
         if overridden:
@@ -421,8 +435,9 @@ if __name__ == "__main__":
     print("rates (drawn from decline-code distributions). It reflects what the real policy would")
     print("achieve IF each retry faced industry-average success probabilities — distinct from the")
     print("live batch report's stub-mode (deterministic) result. Compare dashboards/batch output")
-    print("(e.g., ₹39,776 stub) to this simulation (e.g., ₹24,089) to see the recovery gap when")
-    print("realistic chargeback risk is factored in. The 'retry_everything' row uses the same")
+    print(f"(e.g., ₹39,776 stub) to this simulation (e.g., net ₹{comparison.reclaim.net_recovered:,.2f})")
+    print("to see the recovery gap when realistic chargeback risk is factored in.")
+    print("The 'retry_everything' row uses the same")
     print("success model; stopping rules (R1–R7) are the only policy difference between them.")
     print("=" * 126)
     print("\n" + "=" * 126)
