@@ -356,7 +356,7 @@ def test_payment_captured_is_acknowledged_not_ingested(webhook_client, settings,
         assert session.query(RecoveryCaseRow).filter_by(event_id="evt_cap2").first() is None
 
 
-def test_webhook_route_captures_verified_payload(tmp_path, settings, db) -> None:
+def test_webhook_route_captures_verified_payload(webhook_client, tmp_path, settings, db) -> None:
     """A signature-passing payload is written VERBATIM to the captured-fixtures dir,
     and the case is ingested as provenance=live."""
     from reclaim.db import RecoveryCaseRow

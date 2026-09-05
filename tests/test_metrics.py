@@ -57,11 +57,15 @@ def _webhook_body(
     return json.dumps(data).encode("utf-8")
 
 
-def _ingest(db: Database, settings, body: bytes, event_id: str):
+def _ingest(
+    db: Database, settings, body: bytes, event_id: str, *, provenance=None
+):
     sig = compute_signature(SECRET, body)
     assert verify_signature(SECRET, body, sig)
     event = parse_event(body, event_id_hint=event_id)
-    return ingest_event(db, event, settings)
+    if provenance is None:
+        return ingest_event(db, event, settings)
+    return ingest_event(db, event, settings, provenance=provenance)
 
 
 # ---------------------------------------------------------------------------
@@ -292,12 +296,14 @@ def test_provenance_filter_derives_homogeneous_metric(settings, db: Database) ->
     from reclaim.models import Provenance
     from reclaim.pipeline import run_case
 
-    # Live: a healthy retry_now -> recovered (20000 paise = Rs.200).
-    _ingest(db, settings, _webhook_body(error_code="R01", days_ago=3, amount=20000, sub="pf_live"), "evt_pf_live")
+    # Live: a healthy retry_now -> recovered (20000 paise = Rs.200). sub also
+    # becomes the case_id (subscription_id == case_id), so it must match the
+    # run_case() ids below.
+    _ingest(db, settings, _webhook_body(error_code="R01", days_ago=3, amount=20000, sub="sub_pf_live"), "evt_pf_live")
     # Replay: ANOTHER recovery (30000 paise = Rs.300) — synthetic, so if the two
     # were silently blended the recovered amount would look like Rs.500 as if it
     # were all live traffic.
-    _ingest(db, settings, _webhook_body(error_code="R01", days_ago=3, amount=30000, sub="pf_replay"), "evt_pf_replay", provenance=Provenance.REPLAY)
+    _ingest(db, settings, _webhook_body(error_code="R01", days_ago=3, amount=30000, sub="sub_pf_replay"), "evt_pf_replay", provenance=Provenance.REPLAY)
 
     run_case("sub_pf_live", settings=settings, db=db)
     run_case("sub_pf_replay", settings=settings, db=db)

@@ -15,7 +15,7 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Header, Request, Response
+from fastapi import Depends, FastAPI, Header, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
@@ -100,11 +100,23 @@ def health() -> dict[str, str]:
     return {"status": "ok", "service": "reclaim"}
 
 
+def get_settings_dep() -> Settings:
+    """FastAPI dependency for Settings (overridable by tests)."""
+    return getattr(app.state, "settings", get_settings())
+
+
+def get_db_dep() -> Database:
+    """FastAPI dependency for the Database (overridable by tests)."""
+    return getattr(app.state, "db", get_db())
+
+
 @app.post("/webhook/razorpay")
 async def razorpay_webhook(
     request: Request,
     x_razorpay_signature: str | None = Header(default=None, alias=SIGNATURE_HEADER),
     x_razorpay_event_id: str | None = Header(default=None, alias=EVENT_ID_HEADER),
+    settings: Settings = Depends(get_settings_dep),
+    db: Database = Depends(get_db_dep),
 ) -> JSONResponse:
     """Ingest a verified, deduplicated Razorpay payment-failure event.
 
@@ -112,9 +124,6 @@ async def razorpay_webhook(
     A replay of an already-ingested event returns the existing case with
     ``duplicate=true`` and never re-triggers downstream stages.
     """
-    settings = get_settings_dep()
-    db = get_db_dep()
-
     raw_body = await request.body()
 
     if not verify_signature(settings.razorpay_webhook_secret, raw_body, x_razorpay_signature):
@@ -196,14 +205,6 @@ async def razorpay_webhook(
             "state": case.state.value,
         },
     )
-
-
-def get_settings_dep() -> Settings:
-    return getattr(app.state, "settings", get_settings())
-
-
-def get_db_dep() -> Database:
-    return getattr(app.state, "db", get_db())
 
 
 # ---------------------------------------------------------------------------

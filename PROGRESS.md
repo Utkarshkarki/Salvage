@@ -551,19 +551,91 @@ passing (29.1s); frontend 6/2 unchanged.**
     `test_llm_isolation.py`. The counterfactual wording ("same world, different
     policy") is kept because with #34 it is now literally true.
 
+---
+
+## Phase 6.1 — Live Razorpay Integration (Provenance tier) (this build)
+
+The Phase 6.1 design was implemented + committed in a prior session (`3fc3e65`,
+"feat: Introduce provenance tracking for webhook events and metrics") but the
+tree was RED: 5 failed tests. This session diagnosed each (confirmed against
+the code — none were hidden behaviour bugs) and fixed them. **Backend: 176
+tests / 19 files, all passing (30.3s); frontend 6/2, all passing.**
+
+40. **Provenance tier (code, from `3fc3e65`)** — every `RecoveryCase` carries a
+    `provenance` tag: `live` (real `/webhook/razorpay` deliveries — the implicit
+    default *there*), `replay` (synthetic through the real boundary; batch /
+    baseline / robustness / simulator all pass `provenance=replay` explicitly —
+    a synthetic case can never masquerade as live by forgetting one argument),
+    `mocked` (reserved, evaluation-only, no production ingest path).
+    `compute_metrics` returns `provenance_breakdown` (`{"live": n, "replay": n,
+    "mocked": n}`, always all three keys) and accepts `provenance="live"` to
+    derive a provenance-homogeneous metric. `capture.py` writes every
+    signature-passing payload VERBATIM to `RAZORPAY_WEBHOOK_CAPTURE_DIR`
+    (`{event_type}/{event_id}.json`), warns (never auto-redacts) on
+    card-number-like material, and is fault-isolated (observes, never breaks the
+    money flow). `live.py` (`python -m reclaim.live create|dump`) creates a real
+    test-mode Payment Link (ZERO-HALO: refuses without test keys + a confirmed
+    `razorpay_payment_link_path`) and dumps captured fixtures. `payment.captured`
+    is acknowledged + captured but NEVER ingested as a recovery case (a success
+    must not inflate recovery metrics). README carries the "Live Razorpay
+    Integration (Provenance Tier)" section with an honest status banner.
+
+41. **Five red tests diagnosed + fixed (this session)** — each confirmed against
+    source before touching anything:
+    - `test_payment_captured_is_acknowledged_not_ingested` got 401 — NOT a test
+      or signature bug: the `/webhook/razorpay` route called
+      `get_settings_dep()`/`get_db_dep()` as **plain functions** (never
+      `Depends`), so the `webhook_client` fixture's `app.dependency_overrides`
+      never fired and the route verified against the REAL `.env` secret. Fixed
+      the route to `Depends(get_settings_dep)` / `Depends(get_db_dep)` (the
+      api_v1 pattern), moving the two dep functions above the route. Production
+      behaviour unchanged (the dep functions still fall back to `get_settings()`
+      / `get_db()`); the route is now hermetic-testable via overrides.
+    - `test_webhook_route_captures_verified_payload` — test-authoring bug:
+      `webhook_client` was missing from the parameter list, so the fixture was
+      never injected (the `FixtureFunctionDefinition.post` AttributeError).
+      Added it.
+    - Two `test_metrics.py` provenance tests — test-authoring bugs: the local
+      `_ingest` helper didn't accept/forward `provenance`; and `sub="pf_live"`
+      made case_id `pf_live` while the test called `run_case("sub_pf_live", …)`
+      (`subscription_id == case_id`). Fixed the helper (optional `*` kwarg) and
+      aligned the `sub` values to the intended case ids.
+    - `test_legacy_row_without_provenance_falls_back_live` — REAL schema bug,
+      fixed in code, not papered over: `RecoveryCaseRow.provenance` was
+      `NOT NULL` (`Mapped[str]`), so a pre-provenance row (the documented
+      "reads as live" legacy case) was unrepresentable — a constraint violation,
+      and the `_row_to_case`/`compute_metrics` `or "live"` fallback was dead
+      code. Made the column nullable (`Mapped[str | None]`), keeping `default` +
+      `server_default="live"` so new inserts are always tagged. This is the one
+      schema change and it matches db.py's documented intent.
+
+42. **CLI verification on a fresh DB** — `rm reclaim.db*; python -m reclaim.batch`
+    report now prints `Provenance breakdown : {'live': 0, 'replay': 60,
+    'mocked': 0}` — all 60 synthetic cases tagged replay, zero silently live.
+    Batch metrics unchanged (24 recovered / ₹39,776 / 20.7%; 32 rule overrides
+    `{'R1': 12, 'R3': 5, 'R2': 6, 'R4': 5, 'R6': 4}`; 0 LLM failures; 55 stub
+    actions). `python -m reclaim.verify_audit_chain` → **✓ Chain is valid (235
+    entries)**.
+
+43. **README + .env.example confirmed** — README § "Live Razorpay Integration
+    (Provenance Tier)" present with the honest status banner ("public endpoint
+    not yet registered / no real failure has been captured"); `.env.example`
+    carries `RAZORPAY_PAYMENT_LINK_PATH=/payment_links` and
+    `RAZORPAY_WEBHOOK_CAPTURE_DIR=fixtures/captured`.
+
 ## In progress / next
 
-- **Baseline ₹ figures RE-QUOTED from the controlled counterfactual
-  (2026-09-02, verified live)** — `RAZORPAY_WEBHOOK_SECRET=… python -m
-  reclaim.baseline 42` now reports (draw-artifact values in parens): `do_nothing`
-  0 / ₹0; `retry_everything` 60 calls / **9 ok** (was 20) / ₹23,491 gross (was
-  ₹55,382) / ₹137,974 blocked / **−₹93,786.90 net** (was −₹61,895.90); `reclaim`
-  24 calls / **6 ok** (was 11) / **₹15,994 net** (was ₹24,089). The 9/60 and 6/24
-  match the reviewer's own independent controlled re-derivation exactly — the
-  fix reproduces their prediction. Any submission-facing doc quoting the old
-  ₹55,382 / ₹24,089 figures MUST be updated to these.
-- **A1** (ngrok webhook registration + live-mode run) still blocked on the
-  operator's REAL Razorpay secret/test keys — never guessed.
-- **Commit**: the working tree holds this round's fixes + tests (robustness,
-  baseline, audit_chain, tasks, webhook) and the README/PROGRESS updates,
-  uncommitted on `main`.
+- **Phase 6.1 live step remains operator-gated** — no real Razorpay test-mode
+  delivery has been captured yet. The README's ~10-minute operator flow (zrok,
+  Dashboard webhook registration with the operator's OWN secret, `reclaim-live
+  create`, incognito error-simulation-card checkout) is the path to a genuine
+  `provenance=live` case + `fixtures/captured/` fixture. Never claim "live
+  integration complete" until a real `payment.failed` is captured.
+- **This session's fixes are uncommitted on `main`** (api.py Depends route +
+  dep-function placement, `test_api_v1`/`test_metrics`/`test_provenance` test
+  fixes, db.py nullable provenance column) — left for review per the ground
+  rules. The prior session's commit `3fc3e65` remains the last commit.
+- (From Phase 5) the Baseline ₹ figures RE-QUOTED from the controlled
+  counterfactual (₹23,491 gross / −₹93,786.90 net / ₹15,994 reclaim net) must
+  still be propagated to any submission-facing doc quoting the old
+  ₹55,382 / ₹24,089 figures.

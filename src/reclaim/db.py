@@ -52,9 +52,15 @@ class RecoveryCaseRow(Base):
     # Provenance tier: live = real Razorpay webhook, replay = synthetic through the
     # real boundary, mocked = evaluation-only (never a real ingestion path). Kept a
     # plain string (the schema is Postgres-compatible; the Python-side enum lives in
-    # models.Provenance). server_default makes INSERTs safe even before a migration
-    # on an old table; reads fall back to "live" in _row_to_case for legacy rows.
-    provenance: Mapped[str] = mapped_column(String(16), default="live", server_default="live")
+    # models.Provenance). Nullable ON PURPOSE so a row written before the column
+    # existed (a migrated/legacy DB, or an explicit NULL) is representable instead
+    # of a constraint violation — reads fall back to "live" in _row_to_case and
+    # compute_metrics for exactly that case (see db.py comment + the
+    # test_legacy_row_without_provenance_falls_back_live regression test).
+    # default/server_default keep NEW inserts always tagged.
+    provenance: Mapped[str | None] = mapped_column(
+        String(16), default="live", server_default="live", nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     last_attempt_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
