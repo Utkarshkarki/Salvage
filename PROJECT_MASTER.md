@@ -3,7 +3,7 @@
 **Repository:** https://github.com/Utkarshkarki/Salvage
 **Version:** 0.1.0
 **License:** MIT © 2026 Utkarsh Karki
-**Status:** Pipeline complete + hardened + **Phase 4 production-grade React frontend** + **Phase 5 statistical rigor & structural proof** (multi-seed robustness, counterfactual baseline, tamper-evident audit chain, LLM-isolation proof). Backend suite green (**149 tests across 18 files, all passing** — verified in-session) + frontend component suite green (**6 tests across 2 files**, Vitest + React Testing Library).
+**Status:** Pipeline complete + hardened + **Phase 4 production-grade React frontend** + **Phase 5 statistical rigor & structural proof** (multi-seed robustness, counterfactual baseline, tamper-evident audit chain, LLM-isolation proof) + **Phase 6.1 live Razorpay provenance tier** (live/replay/mocked case tagging, verbatim captured fixtures, a real test-mode failure generator). Backend suite green (**176 tests across 20 files, all passing** — verified in-session) + frontend component suite green (**6 tests across 2 files**, Vitest + React Testing Library). The Phase 6.1 **live** step remains operator-gated: no real Razorpay test-mode delivery has been captured yet (see README's "Live Razorpay Integration").
 
 > This document is the authoritative, file-by-file engineering reference for the Reclaim codebase.
 > It does not summarize — it enumerates every directory, file, class, function, schema, and
@@ -22,11 +22,16 @@ audit trail, and executed **idempotently** so a payment is never double-charged.
 differentiators so it clears comparable public submissions in this track. Phase 4 added a
 **production-grade React SPA** (`frontend/`) plus a **parallel `/api/v1/*`
 JSON namespace** (`api_v1.py`), so the same, already-tested pipeline now exposes both a merchant/
-operator UI and a machine-readable API surface. Phase 5 (the current state of this document) added
-**statistical rigor & structural proof**: multi-seed robustness reporting, a counterfactual baseline
-comparison against two naive strategies, a tamper-evident hash-chained audit log, an explicit
-precision principle in the docs, and a structural test proving the LLM cannot reach money-moving
-code.
+operator UI and a machine-readable API surface. Phase 5 added **statistical rigor & structural
+proof**: multi-seed robustness reporting, a counterfactual baseline comparison against two naive
+strategies, a tamper-evident hash-chained audit log, an explicit precision principle in the docs,
+and a structural test proving the LLM cannot reach money-moving code. Phase 6.1 (the current state
+of this document) added the **live Razorpay integration / provenance tier**: every case is tagged
+at ingest with where its data really came from (`live` real webhook vs `replay` synthetic through
+the real boundary vs `mocked` evaluation-only), raw signature-passing payloads are captured
+verbatim as replay-traceable fixtures (`capture.py`), and `reclaim-live` can generate a genuine
+test-mode failure via the Payments payment-links API. The honest marker of "live integration
+complete" is a real `payment.failed` delivery in `fixtures/captured/` — not the code's capability.
 
 It was built for the **Razorpay AI Buildathon — Track 3 (AI agent for revenue recovery)**.
 
@@ -77,10 +82,12 @@ are deliberately halted or escalated to a human. This yields three hard guarante
 
 **Note on documentation drift:** earlier drafts of this file cited "68 tests / 7 files" (itself a
 correction of the older "63 tests / 6 files"), then "99 tests / 12 files", then "117 tests / 13
-files". This version has been rewritten against the current, verified state: **160 backend tests
-across 19 files** plus **6 frontend component tests across 2 files** (`Vitest`), matching
-`PROGRESS.md` and `README.md`. The per-file counts and module inventory below reflect the current
-repository.
+files", then "160 backend tests / 19 files" (post-Phase-5 with the correctness-fix rows). This
+version has been rewritten against the current, verified state: **176 backend tests across 20
+files** (Phase 6.1 adds `test_provenance.py` = 10, and grows `test_api_v1.py` → 21,
+`test_metrics.py` → 9, `test_webhook.py` → 15) plus **6 frontend component tests across 2 files**
+(`Vitest`), matching `PROGRESS.md` and `README.md`. The per-file counts and module inventory below
+reflect the current repository.
 
 ---
 
@@ -134,14 +141,15 @@ live in `package-lock.json`.
 | `prettier` | `^3.3.3` | Formatting |
 | `@vitejs/plugin-react`, `postcss`, `autoprefixer`, `jsdom`, `@types/*` | — | Build + test toolchain |
 
-### Console entrypoints (Phase 5 footer, `[project.scripts]` in `pyproject.toml`)
-All four CLIs are also invocable as `python -m reclaim.*`; the scripts are thin wrappers:
+### Console entrypoints (`[project.scripts]` in `pyproject.toml`)
+All five CLIs are also invocable as `python -m reclaim.*`; the scripts are thin wrappers:
 | Script | Entry function | What it runs |
 |--------|----------------|--------------|
 | `reclaim-batch` | `reclaim.batch:main` | The synthetic-batch demo (60 new cases) |
 | `reclaim-robustness` | `reclaim.robustness:main` | Multi-seed robustness suite (default 100 seeds) |
 | `reclaim-baseline` | `reclaim.baseline:main` | Counterfactual baseline comparison |
 | `reclaim-verify-audit-chain` | `reclaim.verify_audit_chain:main` | Tamper-evidence audit-chain walk |
+| `reclaim-live` | `reclaim.live:main` | **(Phase 6.1)** real test-mode failure generator (`create` a Payment Link / `dump` captured fixtures) |
 
 ### Technology role map
 | Layer | Technology used |
@@ -156,6 +164,7 @@ All four CLIs are also invocable as `python -m reclaim.*`; the scripts are thin 
 | **JSON API namespace (Phase 4)** | FastAPI `APIRouter` mounted at `/api/v1/*` below the **CORS middleware** — thin wrappers over the same tested logic |
 | **React SPA (Phase 4)** | Vite + React 18 + TypeScript (strict) + Tailwind CSS + TanStack Query + React Router (`frontend/`) |
 | **Statistical rigor (Phase 5)** | `robustness.py` (multi-seed suite), `baseline.py` + `retry_simulator.py` (counterfactual comparison), `audit_chain.py` + `verify_audit_chain.py` (SHA-256 hash-chained audit log) |
+| **Provenance tier (Phase 6.1)** | `capture.py` (verbatim captured fixtures + sensitive-scan warnings), `live.py` (real test-mode Payment Link generator + fixture dump), `provenance` tag on every `RecoveryCase` (`live`/`replay`/`mocked`), `provenance_breakdown` + `provenance=` filter in `compute_metrics`; `httpx` for the live `create` call |
 | Testing / lint / typing | pytest (incl. thread-based adversarial suite), Ruff, mypy (strict); frontend: Vitest + React Testing Library; `test_llm_isolation.py` (AST-based structural proof) |
 
 ### Runtime modes (env-gated, safe by default)
@@ -165,6 +174,11 @@ All four CLIs are also invocable as `python -m reclaim.*`; the scripts are thin 
 - `ACT_MODE=stub` → log the would-be Razorpay call (safe for demos, no credentials).
 - `ACT_MODE=live` → real test-mode Razorpay calls; **refuses** to run without valid keys and
   refuses to guess an unconfirmed API route (`RAZORPAY_RETRY_PATH` must be set).
+- (Phase 6.1) `RAZORPAY_WEBHOOK_CAPTURE_DIR` → where signature-passing payloads are written
+  verbatim as captured fixtures (`{event_type}/{event_id}.json`). Empty = capture **disabled**
+  (hermetic default). `RAZORPAY_PAYMENT_LINK_PATH` → the Payments payment-links route for
+  `reclaim-live create`; empty → the tool **refuses to run** (ZERO-HALO, never guesses a wire
+  format).
 - `VERIFICATION_ENABLED` → gates the verification-only Subscriptions/Settlements lookups (`1`
   default; `0` makes them silent and hermetic).
 - `RECLAIM_CELERY_EAGER=1` → run Celery tasks synchronously, no broker needed.
@@ -222,11 +236,13 @@ Salvage/
 │       ├── audit_chain.py           # Phase 5 hash-chain canonicalization + chain_rows
 │       ├── batch.py                 # `python -m reclaim.batch` CLI entrypoint (+chain finalize)
 │       ├── baseline.py              # Phase 5 counterfactual baseline comparison (3 strategies)
+│       ├── capture.py               # (Phase 6.1) verbatim captured fixtures + sensitive-scan warning
 │       ├── celery_app.py            # Celery app + broker config (Upstash TLS / eager / beat)
 │       ├── config.py                # pydantic-settings env-driven Settings
 │       ├── db.py                    # SQLAlchemy 2 persistence layer + ORM tables + WAL (+hash cols)
 │       ├── dispatcher.py            # webhook -> pipeline handoff (eager / celery)
 │       ├── email.py                 # email stub (single seam for a real provider)
+│       ├── live.py                  # (Phase 6.1) real test-mode failure generator (Payment Link + dump)
 │       ├── llm_client.py            # offline shim / online Ollama wrapper + triage + provenance
 │       ├── manual.py                # human-in-the-loop override actions (control plane)
 │       ├── metrics.py               # batch metrics from audit trail + case states (+precision docs)
@@ -280,20 +296,22 @@ Salvage/
 │           └── CustomerStatus.tsx   # plain-language status, routed OUTSIDE the Layout
 └── tests/
     ├── conftest.py                  # hermetic fixtures (settings/db, no .env)
-    ├── test_api_v1.py               # 18 tests — Phase 4 HTTP-layer JSON API surface
-    ├── test_audit_chain.py          # 11 tests — Phase 5 hash-chain tamper-evidence
-    ├── test_baseline.py             # 10 tests — Phase 5 counterfactual strategies
+    ├── test_api_v1.py               # 21 tests — Phase 4 HTTP-layer JSON API surface (+Phase 6.1 webhook/capture paths)
+    ├── test_audit_chain.py          # 13 tests — Phase 5 hash-chain tamper-evidence
+    ├── test_baseline.py             # 12 tests — Phase 5 counterfactual strategies
     ├── test_llm_isolation.py        # 3 tests — Phase 5 structural LLM isolation (AST)
     ├── test_manual.py               # 5 tests — human override actions
-    ├── test_metrics.py              # 5 tests — metric counter independence
+    ├── test_metrics.py              # 9 tests — metric counter independence (+Phase 6.1 provenance)
     ├── test_models.py               # 9 tests — Pydantic boundary validation
     ├── test_pipeline.py             # 9 tests — end-to-end fallback/idempotency/state
-    ├── test_robustness.py           # 7 tests — Phase 5 multi-seed distribution
+    ├── test_provenance.py           # 10 tests — Phase 6.1 provenance tier contract
+    ├── test_robustness.py           # 8 tests — Phase 5 multi-seed distribution
     ├── test_simulator.py            # 4 tests — rule-sensitivity simulator
     ├── test_state_machine.py        # 14 tests — transition-table legality + manual edges
     ├── test_stopping_rules.py       # 20 tests — every R1–R7 override (policy-as-code)
     ├── test_synthetic.py            # 9 tests — generator invariants
-    ├── test_webhook.py              # 13 tests — signature, parse, dedupe
+    ├── test_tasks.py                # 3 tests — audited broker-mode retries (Phase 5 fix)
+    ├── test_webhook.py              # 15 tests — signature, parse, dedupe (+provenance ingest)
     └── adversarial/                 # Failure Injection & Resilience suite (12 tests)
         ├── __init__.py
         ├── test_audit_chain_concurrency.py  # 1 — Phase 5 race-free chain finalize
@@ -308,19 +326,21 @@ Salvage/
 
 ### Directory & key file roles
 - **`src/reclaim/`** — the entire application, packaged with `setuptools` under
-  `[tool.setuptools.packages.find] where = ["src"]`. This is a **src-layout** package (**31
-  modules** — Phases 1–5).
+  `[tool.setuptools.packages.find] where = ["src"]`. This is a **src-layout** package (**33
+  modules** — Phases 1–6.1; Phase 6.1 adds `capture.py` + `live.py`).
 - **`frontend/`** — a **separate Node/TypeScript package** (not part of the Python build): the
   Phase 4 React SPA (Vite + TS strict + Tailwind + TanStack Query). `package-lock.json` is
   committed; `node_modules/` and `dist/` are gitignored by `frontend/.gitignore`.
-- **`tests/`** — the full pytest suite (**18 files, 149 tests**), hermetic by construction, with a
+- **`tests/`** — the full pytest suite (**20 files, 176 tests**), hermetic by construction, with a
   dedicated `tests/adversarial/` category (now **12 failure-injection & resilience tests**, incl.
   the Phase 5 race-free audit-chain finalize regression), the Phase 4 `test_api_v1.py` covering the
-  JSON API surface, and the Phase 5 `test_audit_chain` / `test_baseline` / `test_robustness` /
-  `test_llm_isolation` files. The separate `frontend/` component suite adds **6 tests across 2
-  files** (Vitest).
-- **Root config/docs** — `pyproject.toml` (Python build + tooling + the four Phase 5 console
-  scripts), `.env.example` (env shape), `README.md`, `PROGRESS.md`, `DECISIONS.md`,
+  JSON API surface, the Phase 5 `test_audit_chain` / `test_baseline` / `test_robustness` /
+  `test_llm_isolation` files, and the Phase 6.1 `test_provenance.py` pinning the provenance-tier
+  contract (live-default ingest, explicit replay everywhere, verbatim capture, nullable legacy
+  provenance). The separate `frontend/` component suite adds **6 tests across 2 files** (Vitest).
+- **Root config/docs** — `pyproject.toml` (Python build + tooling + the five console scripts incl.
+  `reclaim-live`), `.env.example` (env shape — now incl. `RAZORPAY_PAYMENT_LINK_PATH` and
+  `RAZORPAY_WEBHOOK_CAPTURE_DIR`), `README.md`, `PROGRESS.md`, `DECISIONS.md`,
   `CHANGELOG_SUBMISSION.md`, `tasks.md`, `LICENSE`, `.gitignore` (+`.db-backup-*/` ignore rule),
   `baseline-analysis.html` (Phase 5 counterfactual write-up), plus `scripts/dev.sh` / `dev.ps1`
   (one-command dev servers).
