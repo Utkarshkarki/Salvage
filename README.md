@@ -217,7 +217,84 @@ Every Diagnose and Decide call records in the audit trail's `input_state.llm_pro
 
 Beyond payment retry, Reclaim reconciles *verification-only* against real Razorpay test-mode endpoints (`subscription_status`, `settlement_reconciliation`). These are **never** blocking or reversing — they never change a case's terminal state, only record a `verify` audit entry. Every call is fault-isolated (a failure records, never crashes), and routes are config-driven and empty by default (ZERO-HALO: we never guess a wire format).
 
+## Live Razorpay Integration (Provenance Tier)
 
+> **Honest status up front: the live public endpoint is not yet registered and no real
+> failure has been captured — until you complete the operator steps at the bottom of the
+> right-hand column below.** This section documents what the code is *capable* of and exactly
+> how to make it real. Do not present this project as "live integration complete" until a
+> genuine `payment.failed` webhook has been delivered through Razorpay's infrastructure and
+> appears in `fixtures/captured/`.
+
+### Provenance — every case is labelled with where its data really came from
+
+Every `RecoveryCase` carries a **`provenance`** tag, set at ingest time:
+
+| Value | Meaning | Set by |
+|-------|---------|--------|
+| `live` | A genuine Razorpay test-mode webhook delivered through the real public endpoint | The `/webhook/razorpay` route (the implicit default there — only real deliveries reach it) |
+| `replay` | A synthetic webhook, but ingested through the **real** signature-verification boundary | The batch generator / baseline / robustness / simulator (they pass `provenance=replay` explicitly — never the silent `live` default) |
+| `mocked` | Evaluation-only, a fake client at a specific call site — **never** a real ingestion path | Reserved; no production path sets it |
+
+**A `live` case and a synthetic case are never silently blended.** `compute_metrics` returns
+a **`provenance_breakdown`** (`{"live": n, "replay": n, "mocked": n}`) alongside the
+aggregates, and accepts an optional `provenance="live"` filter so you can derive a
+provenance-homogeneous metric (e.g. live-only recovery rate). The aggregate metrics
+(`recovery_rate`, `recovered_amount`, the three non-conflated counters) are computed over
+**all** cases regardless of provenance, so they MIX provenances — read the breakdown and
+filter before citing a recovery rate as if it belonged to live traffic alone.
+
+### Making it live (operator steps, ~10 minutes)
+
+**Why not ngrok / localtunnel?** Both are on [Razorpay's webhook-URL blacklist](https://razorpay.com/docs/payments/webhooks/);
+a registered webhook URL on those domains will not receive deliveries. Use **zrok**, which
+Razorpay documents for exactly this:
+
+1. **Expose the API to the public internet.**
+   ```bash
+   zrok enable <your-token>                 # one-time: registers your account on this machine
+   zrok share public localhost:8000         # → prints a public https://<zrok-id>.share.zrok.io URL
+   ```
+   Start the API first (`uvicorn reclaim.api:app --port 8000` — see the install block below).
+2. **Register the webhook** at [Razorpay Dashboard → Settings → Webhooks](https://dashboard.razorpay.com/app/webhooks):
+   - Webhook URL: **`https://<zrok-id>.share.zrok.io/webhook/razorpay`**
+   - **Webhook secret: generate one yourself** (e.g. `python -c "import secrets; print(secrets.token_hex(32))"`) — set it in `.env` as **`RAZORPAY_WEBHOOK_SECRET`**. This is *not* your API key secret.
+   - Events to subscribe to: **`payment.failed`**, **`payment.captured`** (acknowledged,
+     observational only — Reclaim recovers *failures*, it never ingests a success),
+     **`subscription.charged.failed`**, **`subscription.pending`** (cover the
+     Subscriptions/Settlements verification surface).
+3. **Enable captured fixtures** so every signature-passing payload is written verbatim:
+   ```bash
+   # .env
+   RAZORPAY_WEBHOOK_CAPTURE_DIR=fixtures/captured
+   ```
+   Deliveries land at `fixtures/captured/{event_type}/{event_id}.json` (byte-exact wire
+   payloads). **This is what makes replay data honestly traceable**: a replay fixture must be
+   copied from a real captured shape, never hand-invented. Review each fixture before
+   committing (the capture hook warns loudly if it sees card-number-like material; Razorpay
+   test-mode payloads should contain only `last4`/`bank`/`method`, never a full PAN).
+4. **Trigger a real test-mode failure:**
+   ```bash
+   python -m reclaim.live create      # creates a real Payment Link, prints its short_url
+   ```
+   Open the printed URL in an **incognito** window and complete checkout with one of
+   [Razorpay's documented error-simulation test cards](https://razorpay.com/docs/payments/payments/test-card-details/)
+   so the payment is deliberately declined. Razorpay delivers `payment.failed` → Reclaim
+   verifies the signature, **captures the raw fixture**, and ingests the case with
+   `provenance=live`. Inspect the case on the dashboard (`GET /cases/<case_id>` shows
+   `provenance`) and confirm what arrived:
+   ```bash
+   python -m reclaim.live dump        # list captured fixtures + per-event summary
+   ```
+5. **Metrics stay honest:** the demo/product metrics now separate `live` vs `replay`; the
+   `reclaim-batch` report prints `provenance_breakdown`. A `payment.captured` delivery is
+   acknowledged and captured but **never** ingested as a recovery case (a success must not
+   inflate `recovered_amount`).
+
+**Please note:** creating a Payment Link (`reclaim-live create`) requires
+`RAZORPAY_KEY_ID`/`RAZORPAY_KEY_SECRET` (test mode) and `RAZORPAY_PAYMENT_LINK_PATH`
+(e.g. `/payment_links`) in `.env`; the tool **refuses to run** without them (ZERO-HALO —
+it never guesses a wire format). The hermetic demo/stub paths never need any of this.
 
 ```bash
 # 1. Install

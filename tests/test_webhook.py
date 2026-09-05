@@ -97,6 +97,19 @@ def test_parse_missing_event_type_rejected() -> None:
         parse_event(body)
 
 
+def test_parse_accepts_payment_captured() -> None:
+    """Phase 6.1: payment.captured is a subscribed, accepted event type — it is
+    parsed fine (the API layer acknowledges it but never ingests it as a case)."""
+    body = json.dumps(
+        {
+            "event": "payment.captured",
+            "entity": {"id": "pay_cap", "amount": 100000, "status": "captured"},
+        }
+    ).encode("utf-8")
+    event = parse_event(body, event_id_hint="evt_cap")
+    assert event.type == "payment.captured"
+
+
 def test_deterministic_event_id_without_hint() -> None:
     body = _body()
     e1 = parse_event(body)

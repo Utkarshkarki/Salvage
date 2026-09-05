@@ -27,9 +27,10 @@ from .api_views import (
     _sim_metric_key,
     customer_view as _customer_view,
 )
+from .capture import capture_webhook
 from .config import Settings, get_settings
 from .db import Database, get_db, init_schema, RecoveryCaseRow
-from .models import AuditLogEntry, CaseState
+from .models import AuditLogEntry, CaseState, WebhookType
 from .state_machine import IllegalTransitionError
 from .webhook import (
     EVENT_ID_HEADER,
@@ -125,10 +126,48 @@ async def razorpay_webhook(
     try:
         event = parse_event(raw_body, event_id_hint=x_razorpay_event_id)
     except RazorpayWebhookException as exc:
+        # The signature was valid but the body did not parse. Capture it anyway
+        # (under `_unparsed/`) so a genuinely-signed-but-weird delivery leaves a
+        # trace, then reject — never ingest a half-understood payload.
+        capture_webhook(
+            settings.razorpay_webhook_capture_dir,
+            raw_body,
+            event_id=x_razorpay_event_id,
+        )
         logger.warning("WEBHOOK_REJECTED reason=%s", exc)
         return JSONResponse(status_code=422, content={"error": "invalid_webhook_payload"})
 
+    # A signature-passing, well-formed payload is worth keeping verbatim as a
+    # captured fixture (if capture is enabled) — this is the traceable raw shape
+    # any future replay must be copied from, never hand-invented.
+    capture_webhook(
+        settings.razorpay_webhook_capture_dir,
+        raw_body,
+        event_id=event.event_id,
+        event_type=event.type.value,
+    )
+
+    # payment.captured is OBSERVATIONAL, not a recovery case: acknowledging it would
+    # inject a successful payment into the revenue-recovery pipeline and corrupt the
+    # metrics. Acknowledge (and the fixture above records the real shape) but never
+    # ingest. Every other event (payment.failed, subscription.charged.failed,
+    # subscription.pending) flows through the recovery ingest as before.
+    if event.type == WebhookType.PAYMENT_CAPTURED:
+        logger.info("WEBHOOK_ACKNOWLEDGED_NOT_INGESTED event_id=%s", event.event_id)
+        return JSONResponse(
+            status_code=200,
+            content={
+                "acknowledged": True,
+                "event_id": event.event_id,
+                "type": event.type.value,
+                "ingested": False,
+                "reason": "payment.captured is observational; Reclaim recovers failures",
+            },
+        )
+
     try:
+        # The real external route: ingest with the implicit LIVE provenance (the
+        # honest default here — only genuine deliveries reach this line).
         case, is_new, _row_pk = ingest_event(db, event, settings)
     except RazorpayWebhookException as exc:
         logger.warning("WEBHOOK_REJECTED reason=%s", exc)
@@ -192,6 +231,7 @@ def case_detail(case_id: str, fmt: str = "html") -> Response:
                 "state": row.state,
                 "amount": row.amount,
                 "customer_id": row.customer_id,
+                "provenance": row.provenance or "live",
                 "fallback_any_stage": any(e.fallback_triggered for e in trail),
                 "audit_trail": [_entry_to_dict(e) for e in trail],
             }
@@ -213,6 +253,7 @@ def case_detail(case_id: str, fmt: str = "html") -> Response:
     &middot; subscription <b>{html.escape(row.subscription_id)}</b>
     &middot; attempt <b>{row.attempt_number}</b>
     &middot; decline code <b>{html.escape(row.failure_reason)}</b>
+    &middot; provenance <b>{html.escape(row.provenance or 'live')}</b>
     &middot; ingested {row.created_at:%Y-%m-%d %H:%M:%S} UTC</div>
 </div>
 {_trail_html(trail)}

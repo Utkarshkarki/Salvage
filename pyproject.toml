@@ -32,6 +32,7 @@ reclaim-batch = "reclaim.batch:main"
 reclaim-robustness = "reclaim.robustness:main"
 reclaim-baseline = "reclaim.baseline:main"
 reclaim-verify-audit-chain = "reclaim.verify_audit_chain:main"
+reclaim-live = "reclaim.live:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -41,6 +41,18 @@ class Settings(BaseSettings):
     razorpay_retry_path: str = ""
     razorpay_subscription_path: str = ""
     razorpay_settlement_path: str = ""
+    # Live-failure generator target (Part 6.1): the Payments API Payment Link
+    # route, used by `python -m reclaim.live create` to produce a real test-mode
+    # checkout that a human completes with an error-simulation card. Empty by
+    # default (ZERO-HALO — refuse rather than guess); set to the documented path.
+    razorpay_payment_link_path: str = ""
+    # Where RAW webhook payloads that pass signature verification are written
+    # verbatim, as captured fixtures for traceable replay:
+    #   {dir}/{event_type}/{event_id}.json
+    # Empty (the default) = capture DISABLED — the hermetic/demo default so tests
+    # and demos never write to disk. When set (e.g. RAZORPAY_WEBHOOK_CAPTURE_DIR=
+    # fixtures/captured), every signature-passing external delivery is recorded.
+    razorpay_webhook_capture_dir: str = ""
     # Best-effort (verification-only, non-blocking) external lookups. When
     # False the verify helpers record nothing and never touch the network —
     # the hermetic/demo default keeps the stub path side-effect silent.

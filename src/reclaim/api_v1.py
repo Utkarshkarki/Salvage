@@ -88,6 +88,7 @@ def _case_summary(r: RecoveryCaseRow) -> dict[str, Any]:
         "subscription_id": r.subscription_id,
         "failure_reason": r.failure_reason,
         "attempt_number": r.attempt_number,
+        "provenance": r.provenance or "live",
         "created_at": r.created_at.isoformat() if r.created_at else None,
     }
 
@@ -104,6 +105,7 @@ def _case_detail_json(db: Database, case_id: str) -> dict[str, Any]:
         "state": row.state,
         "amount": row.amount,
         "customer_id": row.customer_id,
+        "provenance": row.provenance or "live",
         "fallback_any_stage": any(e.fallback_triggered for e in trail),
         "audit_trail": [_audit_entry_dict(e) for e in trail],
     }

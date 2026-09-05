@@ -16,6 +16,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from fastapi.testclient import TestClient
 
+import reclaim.api as api
 from reclaim import api_v1, repo
 from reclaim.api import app
 from reclaim.models import CaseState as CaseStateEnum
@@ -58,6 +59,23 @@ def client(settings, db):
     real dev DB) never runs — endpoints reach the conftest temp DB through the
     overridden dependencies.
     """
+    app.dependency_overrides[api_v1.get_db_dep] = lambda: db
+    app.dependency_overrides[api_v1.get_settings_dep] = lambda: settings
+    c = TestClient(app)
+    yield c
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture()
+def webhook_client(settings, db):
+    """TestClient with BOTH app surfaces pointed at the hermetic DB/settings.
+
+    The /webhook/razorpay route uses ``api.get_db_dep``/``api.get_settings_dep``
+    (NOT api_v1's) and, unlike the /api/v1/* tests, actually runs the route body —
+    so it needs api.py's deps overridden too to stay off the real DB and .env.
+    """
+    app.dependency_overrides[api.get_db_dep] = lambda: db
+    app.dependency_overrides[api.get_settings_dep] = lambda: settings
     app.dependency_overrides[api_v1.get_db_dep] = lambda: db
     app.dependency_overrides[api_v1.get_settings_dep] = lambda: settings
     c = TestClient(app)
@@ -182,9 +200,11 @@ def test_metrics_full_shape(client, settings, db) -> None:
         "llm_failure_cases", "stopping_rule_overrides", "stopping_rule_overrides_by_rule",
         "rule_override_cases", "stub_mode_actions", "stub_mode_cases",
         "cases_resolved_without_retry", "stopped_cases", "escalated_cases",
+        "provenance_breakdown",
     ):
         assert key in body, f"missing metrics key {key}"
     assert body["total_cases"] == 1
+    assert body["provenance_breakdown"] == {"live": 1, "replay": 0, "mocked": 0}
 
 
 def test_rules_returns_registry(client, settings) -> None:
@@ -289,3 +309,78 @@ def test_customer_status_happy(client, settings, db) -> None:
 def test_customer_status_unknown_404(client) -> None:
     r = client.get("/api/v1/status/nope")
     assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Phase 6.1 — provenance on the read paths + the live webhook route
+# ---------------------------------------------------------------------------
+
+
+def test_case_payloads_carry_provenance(client, settings, db) -> None:
+    """The A1 summary and A2 detail expose the case's provenance tag."""
+    case_id = _seed(db, settings, sub="prov1")
+    r = client.get(f"/api/v1/cases/{case_id}")
+    assert r.status_code == 200
+    assert r.json()["provenance"] == "live"  # seeded through the real ingest path
+
+    items = client.get("/api/v1/cases").json()["items"]
+    assert items[0]["provenance"] == "live"
+
+
+def test_payment_captured_is_acknowledged_not_ingested(webhook_client, settings, db) -> None:
+    """A payment.captured delivery is acknowledged (observational) and NEVER becomes
+    a recovery case — a success must not inflate the revenue-recovery metrics."""
+    from reclaim.db import RecoveryCaseRow
+
+    body = json.dumps({
+        "event": "payment.captured",
+        "entity": {"id": "pay_cap2", "amount": 100000, "status": "captured", "created_at": 1700000000},
+    }).encode("utf-8")
+    sig = compute_signature(settings.razorpay_webhook_secret, body)
+
+    r = webhook_client.post(
+        "/webhook/razorpay",
+        content=body,
+        headers={
+            "X-Razorpay-Signature": sig,
+            "X-Razorpay-Event-Id": "evt_cap2",
+        },
+    )
+    assert r.status_code == 200
+    j = r.json()
+    assert j["acknowledged"] is True
+    assert j["ingested"] is False
+    assert j["type"] == "payment.captured"
+
+    with db.create_session() as session:
+        assert session.query(RecoveryCaseRow).filter_by(event_id="evt_cap2").first() is None
+
+
+def test_webhook_route_captures_verified_payload(tmp_path, settings, db) -> None:
+    """A signature-passing payload is written VERBATIM to the captured-fixtures dir,
+    and the case is ingested as provenance=live."""
+    from reclaim.db import RecoveryCaseRow
+
+    cap = settings.model_copy(update={"razorpay_webhook_capture_dir": str(tmp_path)})
+    app.dependency_overrides[api.get_settings_dep] = lambda: cap
+
+    body = _body(sub="cap3", code="R01")
+    sig = compute_signature(settings.razorpay_webhook_secret, body)
+    r = webhook_client.post(
+        "/webhook/razorpay",
+        content=body,
+        headers={"X-Razorpay-Signature": sig, "X-Razorpay-Event-Id": "evt_cap3"},
+    )
+    assert r.status_code == 200
+    assert r.json()["duplicate"] is False
+
+    fixture = tmp_path / "payment.failed" / "evt_cap3.json"
+    assert fixture.exists()
+    assert fixture.read_bytes() == body  # byte-exact wire payload
+
+    with db.create_session() as session:
+        row = session.query(RecoveryCaseRow).filter_by(event_id="evt_cap3").first()
+    assert row is not None
+    assert row.provenance == "live"
+
+    app.dependency_overrides.pop(api.get_settings_dep, None)

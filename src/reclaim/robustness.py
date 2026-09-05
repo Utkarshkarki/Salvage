@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from reclaim.config import Settings, get_settings
 from reclaim.db import Database, init_schema
 from reclaim.metrics import compute_metrics
+from reclaim.models import Provenance
 from reclaim.pipeline import run_batch
 from reclaim.synthetic import generate_batch
 from reclaim.webhook import ingest_event
@@ -84,12 +85,15 @@ def _run_one_seed(seed: int, settings: Settings) -> RobustnessResult:
             webhook_secret=settings.razorpay_webhook_secret,
         )
 
-        # Ingest all valid deliveries into THIS seed's fresh DB.
+        # Ingest all valid deliveries into THIS seed's fresh DB — synthetic batch
+        # output is REPLAY provenance, never silently LIVE.
         case_ids = []
         for delivery in batch.valid_deliveries():
             event = delivery.event
             if event is not None:
-                case, is_new, _ = ingest_event(db, event, settings)
+                case, is_new, _ = ingest_event(
+                    db, event, settings, provenance=Provenance.REPLAY
+                )
                 if is_new:
                     case_ids.append(case.case_id)
 

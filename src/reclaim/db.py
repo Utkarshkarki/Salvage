@@ -49,6 +49,12 @@ class RecoveryCaseRow(Base):
     customer_tier: Mapped[str] = mapped_column(String(32))
     payment_history: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
     state: Mapped[str] = mapped_column(String(32), index=True)
+    # Provenance tier: live = real Razorpay webhook, replay = synthetic through the
+    # real boundary, mocked = evaluation-only (never a real ingestion path). Kept a
+    # plain string (the schema is Postgres-compatible; the Python-side enum lives in
+    # models.Provenance). server_default makes INSERTs safe even before a migration
+    # on an old table; reads fall back to "live" in _row_to_case for legacy rows.
+    provenance: Mapped[str] = mapped_column(String(16), default="live", server_default="live")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     last_attempt_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True

@@ -261,3 +261,55 @@ def test_audit_entry_disambiguates_llm_failure_from_rule_override(
     )
     assert decide_b.fallback_triggered is False
     assert decide_b.rule_override is True
+
+
+# ---------------------------------------------------------------------------
+# Provenance tier (Phase 6.1): metrics are never silently provenance-blended
+# ---------------------------------------------------------------------------
+
+
+def test_provenance_breakdown_counts_by_provenance(settings, db: Database) -> None:
+    """Aggregates disclose their composition: live + replay + mocked, always."""
+    from reclaim.metrics import compute_metrics
+    from reclaim.models import Provenance
+
+    _ingest(db, settings, _webhook_body(sub="pbl_live"), "evt_pbl_live")          # default LIVE
+    _ingest(db, settings, _webhook_body(sub="pbl_replay"), "evt_pbl_replay", provenance=Provenance.REPLAY)
+
+    m = compute_metrics(db, settings)
+    assert m["provenance_breakdown"] == {
+        "live": 1,
+        "replay": 1,
+        "mocked": 0,
+    }
+    assert m["total_cases"] == 2
+
+
+def test_provenance_filter_derives_homogeneous_metric(settings, db: Database) -> None:
+    """``compute_metrics(provenance="live")`` must differ from the blended aggregate:
+    a live case and a synthetic case are never silently merged into one recovery rate."""
+    from reclaim.metrics import compute_metrics
+    from reclaim.models import Provenance
+    from reclaim.pipeline import run_case
+
+    # Live: a healthy retry_now -> recovered (20000 paise = Rs.200).
+    _ingest(db, settings, _webhook_body(error_code="R01", days_ago=3, amount=20000, sub="pf_live"), "evt_pf_live")
+    # Replay: ANOTHER recovery (30000 paise = Rs.300) — synthetic, so if the two
+    # were silently blended the recovered amount would look like Rs.500 as if it
+    # were all live traffic.
+    _ingest(db, settings, _webhook_body(error_code="R01", days_ago=3, amount=30000, sub="pf_replay"), "evt_pf_replay", provenance=Provenance.REPLAY)
+
+    run_case("sub_pf_live", settings=settings, db=db)
+    run_case("sub_pf_replay", settings=settings, db=db)
+
+    blended = compute_metrics(db, settings)
+    live_only = compute_metrics(db, settings, provenance="live")
+
+    # The blended aggregate mixes both; the filtered view is homogeneous.
+    assert blended["total_cases"] == 2
+    assert blended["recovered_amount"] == 500.0  # 200 live + 300 replay
+    assert live_only["total_cases"] == 1
+    assert live_only["recovered_cases"] == 1
+    assert live_only["recovered_amount"] == 200.0  # live traffic only, never the blend
+    assert live_only["recovery_rate"] > 0.0
+    assert live_only["provenance_breakdown"] == {"live": 1, "replay": 0, "mocked": 0}

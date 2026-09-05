@@ -9,6 +9,15 @@ Metrics computed:
 - stopping_rule_overrides: stopping rule (R1-R6) overrode a valid LLM proposal
 - stub_mode_actions: actions executed in stub/demo mode (not a fallback at all)
 - cases_resolved_without_retry: stopped + escalated (no retry action taken)
+
+PROVENANCE (Phase 6.1): every case carries a ``provenance`` tag — ``live`` (a
+genuine Razorpay test-mode webhook), ``replay`` (synthetic, through the real
+boundary), ``mocked`` (evaluation-only). The aggregate metrics returned here are
+computed over ALL cases REGARDLESS of provenance and therefore MIX provenances.
+Never cite a blended recovery rate as if it belonged to live traffic alone: read
+``provenance_breakdown`` to see the composition, and pass ``provenance="live"``
+(or "replay"/"mocked") to ``compute_metrics`` to derive a provenance-homogeneous
+metric. A ``live`` case and a synthetic case must never be silently blended.
 """
 
 from __future__ import annotations
@@ -18,7 +27,7 @@ from collections import Counter
 from . import repo
 from .config import Settings
 from .db import Database
-from .models import Action, CaseState
+from .models import Action, CaseState, Provenance
 
 # Actions that actually hit an external side-effect path (vs. Action.STOP,
 # which resolves with NO side effect). Used to scope the stub-mode counter to
@@ -31,12 +40,23 @@ _EXECUTED_ACTIONS = {
 }
 
 
-def compute_metrics(db: Database, settings: Settings) -> dict[str, object]:
+def compute_metrics(
+    db: Database,
+    settings: Settings,
+    *,
+    provenance: str | None = None,
+) -> dict[str, object]:
     """Compute batch-level metrics from the audit trail + case states.
 
     Every metric is derived from what the pipeline actually recorded — no guesses.
     Field labels are precise about what each metric proves vs. what requires external
     confirmation (see README "Precision principle" section).
+
+    ``provenance`` — when given (one of "live"/"replay"/"mocked"), the metrics are
+    computed over ONLY the cases of that provenance, so a caller can derive a
+    provenance-homogeneous metric (e.g. ``provenance="live"`` recovery rate) and
+    never silently blend a live case with a synthetic one. Omit it (the default)
+    to get the full aggregate, which MIXES provenances — see the module docstring.
 
     Returns a dict with:
     - total_cases: total cases processed
@@ -48,9 +68,22 @@ def compute_metrics(db: Database, settings: Settings) -> dict[str, object]:
     - stopping_rule_overrides: cases where R1–R7 overrode an LLM proposal
     - stub_mode_actions: in ACT_MODE=stub, actions executed (environment property, not model property)
     - cases_resolved_without_retry: stopped + escalated (no retry action taken)
+    - provenance_breakdown: {"live": n, "replay": n, "mocked": n} — how many cases
+      of each provenance went into this aggregate (always all three keys).
     """
     rows = repo.all_case_rows(db)
+    if provenance is not None:
+        rows = [r for r in rows if (r.provenance or Provenance.LIVE.value) == provenance]
     total = len(rows)
+
+    # Provenance composition of what this aggregate actually measures. Always all
+    # three keys so the shape is stable for callers (0 is a valid, honest count).
+    provenance_breakdown: dict[str, int] = {
+        p.value: sum(
+            1 for r in rows if (r.provenance or Provenance.LIVE.value) == p.value
+        )
+        for p in Provenance
+    }
 
     state_dist: Counter[str] = Counter()
     cause_breakdown: Counter[str] = Counter()
@@ -158,6 +191,10 @@ def compute_metrics(db: Database, settings: Settings) -> dict[str, object]:
         "recovered_amount": round(recovered_amount, 2),
         "recovery_rate": round(recovery_rate, 4),
         "cause_breakdown": dict(cause_breakdown),
+        # Provenance composition of this aggregate (all three keys). When
+        # `provenance=` filtered, the aggregate is homogeneous and this reflects
+        # only that filter. Aggregate metrics above MIX provenances by default.
+        "provenance_breakdown": provenance_breakdown,
         # Three separate counters (deliberately unambiguous and not conflated)
         "llm_call_failures": len(llm_failure_cases),
         "llm_failure_cases": llm_failure_cases,

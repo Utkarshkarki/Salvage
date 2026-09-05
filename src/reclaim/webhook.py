@@ -26,7 +26,7 @@ from sqlalchemy.exc import IntegrityError
 
 from .config import Settings
 from .db import Database, RecoveryCaseRow
-from .models import CaseState, PaymentRecord, RecoveryCase, WebhookEvent
+from .models import CaseState, PaymentRecord, Provenance, RecoveryCase, WebhookEvent
 
 logger = logging.getLogger("reclaim.webhook")
 
@@ -117,10 +117,14 @@ def _deterministic_event_id(raw_body: bytes, data: dict[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 
 
-def event_to_case(event: WebhookEvent) -> RecoveryCase:
+def event_to_case(event: WebhookEvent, *, provenance: Provenance = Provenance.LIVE) -> RecoveryCase:
     """Map a validated webhook event onto the RecoveryCase schema.
 
     Derives attempt_number from the entity when present; defaults to 1.
+
+    ``provenance`` defaults to LIVE because the caller (``ingest_event``) is the
+    real webhook boundary; synthetic paths MUST pass their own provenance
+    explicitly and never rely on this default.
     """
     entity = event.payload.get("entity") or {}
     raw_attempt = entity.get("attempt_number") or entity.get("attempts") or 1
@@ -155,6 +159,7 @@ def event_to_case(event: WebhookEvent) -> RecoveryCase:
             attempt_number=attempt,
             customer_tier="standard",  # enriched from CRM in the ingest pipeline
             payment_history=history,
+            provenance=provenance,
         )
     except ValidationError as exc:
         # ZERO-HALO: an event that cannot map to a valid case is rejected.
@@ -187,6 +192,9 @@ def _payment_history_from_json(history: list[dict[str, Any]]) -> list[PaymentRec
 def _row_to_case(row: Any) -> RecoveryCase:
     """Rebuild a RecoveryCase view from a persisted row (read path)."""
     history = _payment_history_from_json(row.payment_history or [])
+    # Legacy rows (pre-provenance schema) have no column; both the ORM server_default
+    # and this fallback keep them honest as `live` (the recoverable-unit default).
+    raw_provenance = getattr(row, "provenance", None) or Provenance.LIVE.value
     return RecoveryCase(
         case_id=row.case_id,
         event_id=row.event_id,
@@ -198,15 +206,28 @@ def _row_to_case(row: Any) -> RecoveryCase:
         customer_tier=row.customer_tier,
         payment_history=history,
         state=CaseState(row.state),
+        provenance=Provenance(raw_provenance),
         created_at=row.created_at,
     )
 
 
-def ingest_event(db: Database, event: WebhookEvent, settings: Settings) -> tuple[RecoveryCase, bool, int]:
+def ingest_event(
+    db: Database,
+    event: WebhookEvent,
+    settings: Settings,
+    *,
+    provenance: Provenance = Provenance.LIVE,
+) -> tuple[RecoveryCase, bool, int]:
     """Persist a verified event as a new RecoveryCase (state=INGESTED).
 
     Returns ``(case, is_new, row_pk)``. A duplicate event_id returns the
     existing case with ``is_new=False`` and never re-triggers stages.
+
+    PROVENANCE — no silent default: only the real ``/webhook/razorpay`` route
+    reaches this without an explicit provenance, so the LIVE default is honest
+    *there*. Every synthetic path (batch / baseline / robustness / simulator)
+    MUST pass ``provenance=Provenance.REPLAY`` explicitly so a synthetic case can
+    never masquerade as live by forgetting one argument.
     """
     # Fast path: already present.
     with db.create_session() as session:
@@ -219,7 +240,7 @@ def ingest_event(db: Database, event: WebhookEvent, settings: Settings) -> tuple
             )
             return _row_to_case(existing), False, int(existing.id)
 
-    case = event_to_case(event)
+    case = event_to_case(event, provenance=provenance)
     from .db import utcnow  # local import avoids an import cycle at module load
 
     row = RecoveryCaseRow(
@@ -234,6 +255,7 @@ def ingest_event(db: Database, event: WebhookEvent, settings: Settings) -> tuple
         customer_tier=case.customer_tier,
         payment_history=_payment_history_to_json(case.payment_history),
         state=case.state.value,
+        provenance=provenance.value,
         created_at=utcnow(),
     )
     with db.create_session() as session:

@@ -52,11 +52,42 @@ class Action(StrEnum):
 
 
 class WebhookType(StrEnum):
-    """Razorpay webhook event types Reclaim subscribes to."""
+    """Razorpay webhook event types Reclaim subscribes to.
+
+    ``PAYMENT_CAPTURED`` is observational only: a success event is acknowledged
+    (and captured to fixtures when enabled) but NEVER ingested as a recovery case —
+    injecting a successful payment into the recovery pipeline would corrupt the
+    revenue-recovery metrics.
+    """
 
     PAYMENT_FAILED = "payment.failed"
+    PAYMENT_CAPTURED = "payment.captured"
     SUBS_CHARGE_FAILED = "subscription.charged.failed"
     SUBS_PENDING = "subscription.pending"
+
+
+class Provenance(StrEnum):
+    """Where a case's triggering webhook actually came from.
+
+    The provenance tier keeps every number honest about what it measures:
+      * ``live``   — a genuine Razorpay test-mode webhook delivered through the
+                     real public endpoint (only the /webhook/razorpay route,
+                     which never sets an explicit provenance, defaults to this).
+      * ``replay`` — a synthetic webhook, but ingested through the real
+                     signature-verification boundary. When a real payload has been
+                     captured to ``fixtures/captured``, replay shapes should be
+                     copied from it — never hand-invented.
+      * ``mocked`` — evaluation-only, a fake client at a specific call site.
+                     Never a real ingestion path.
+
+    A ``live`` case and a synthetic case must NEVER be silently blended into the
+    same metric — ``metrics.compute_metrics`` exposes ``provenance_breakdown`` and
+    accepts a ``provenance=`` filter for exactly this reason.
+    """
+
+    LIVE = "live"
+    REPLAY = "replay"
+    MOCKED = "mocked"
 
 
 # ---------------------------------------------------------------------------
@@ -92,6 +123,7 @@ class RecoveryCase(BaseModel):
     customer_tier: str = "standard"
     payment_history: list[PaymentRecord] = Field(default_factory=list)
     state: CaseState = CaseState.INGESTED
+    provenance: Provenance = Provenance.LIVE
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     def days_since_last_attempt(self, now: datetime | None = None) -> int:

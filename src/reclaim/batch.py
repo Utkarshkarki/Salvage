@@ -25,6 +25,7 @@ from typing import Any
 
 from .config import Settings, get_settings
 from .db import Base, Database, init_schema
+from .models import Provenance
 from .webhook import (
     RazorpayWebhookException,
     ingest_event,
@@ -80,7 +81,10 @@ def ingest_batch(
             rejected += 1
             continue
         try:
-            _case, is_new, _ = ingest_event(db, event, settings)
+            # Synthetic batch output is tagged REPLAY, never silently LIVE.
+            _case, is_new, _ = ingest_event(
+                db, event, settings, provenance=Provenance.REPLAY
+            )
         except RazorpayWebhookException:
             rejected += 1
             continue
@@ -151,6 +155,8 @@ def _print_report(metrics: dict[str, object], db: Database, new_ids: list[str]) 
 
     print("State distribution          :", metrics["state_distribution"])
     print("Root-cause breakdown        :", metrics["cause_breakdown"])
+    # Honest provenance disclosure: this demo batch is all synthetic (replay).
+    print("Provenance breakdown        :", metrics["provenance_breakdown"])
 
     chosen = next((c for c in new_ids if _resolved_without_retry(db, c)), None)
     print(line)

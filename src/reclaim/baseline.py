@@ -12,7 +12,7 @@ from typing import Literal
 from reclaim.config import Settings, get_settings
 from reclaim.db import Database, init_schema
 from reclaim.metrics import compute_metrics
-from reclaim.models import Action, DecideInput, DecideOutput
+from reclaim.models import Action, DecideInput, DecideOutput, Provenance
 from reclaim.pipeline import run_batch
 from reclaim.synthetic import generate_batch
 from reclaim.webhook import ingest_event
@@ -322,12 +322,15 @@ def _run_baseline_comparison(
         webhook_secret=webhook_secret,
     )
 
-    # Ingest all valid deliveries
+    # Ingest all valid deliveries — synthetic batch output is REPLAY provenance,
+    # never silently LIVE (a counterfactual runs on synthetic cases).
     case_ids = []
     for delivery in batch.valid_deliveries():
         event = delivery.event
         if event is not None:
-            case, is_new, _ = ingest_event(db, event, settings)
+            case, is_new, _ = ingest_event(
+                db, event, settings, provenance=Provenance.REPLAY
+            )
             if is_new:
                 case_ids.append(case.case_id)
 
